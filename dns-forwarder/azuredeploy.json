@@ -62,7 +62,7 @@
         "vmTempUsername": "tempUser",
         "vmSkuName": "2019-Datacenter-Core",
         "vmSize": "Standard_DS1_v2",
-        "scriptURL": "https://raw.githubusercontent.com/wmgries/azure-files-samples/dns-forwarder/dns-forwarder/configureVM.ps1",
+        "scriptURL": "https://raw.githubusercontent.com/Azure-Samples/azure-files-samples/master/dns-forwarder/configureVM.ps1",
         "scriptName": "configureVM.ps1"
     },
     "functions": [
