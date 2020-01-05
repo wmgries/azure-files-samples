@@ -1,0 +1,139 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "functions": [
+        {
+            "namespace": "ps",
+            "members": {
+                "paramSwitch": {
+                    "parameters": [
+                        {
+                            "name": "paramName",
+                            "type": "string"
+                        },
+                        {
+                            "name": "boolValue",
+                            "type": "bool"
+                        }
+                    ],
+                    "output": {
+                        "type": "string",
+                        "value": "[concat(' -', parameters('paramName'), if(not(parameters('boolValue')), ':$false', ''))]"
+                    }
+                },
+                "paramBool": {
+                    "parameters": [
+                        {
+                            "name": "paramName",
+                            "type": "string"
+                        },
+                        {
+                            "name": "boolValue",
+                            "type": "bool"
+                        }
+                    ],
+                    "output": {
+                        "type": "string",
+                        "value": "[concat(' -', parameters('paramName'), ' $', string(parameters('boolValue')))]"
+                    }
+                },
+                "paramString": {
+                    "parameters": [
+                        {
+                            "name": "paramName",
+                            "type": "string"
+                        },
+                        {
+                            "name": "strValue",
+                            "type": "string"
+                        }
+                    ],
+                    "output": {
+                        "type": "string",
+                        "value": "[concat(' -', parameters('paramName'), ' ''', parameters('strValue'), '''')]"
+                    }
+                },
+                "paramInt": {
+                    "parameters": [
+                        {
+                            "name": "paramName",
+                            "type": "string"
+                        },
+                        {
+                            "name": "intValue",
+                            "type": "int"
+                        }
+                    ],
+                    "output": {
+                        "type": "string",
+                        "value": "[concat(' -', parameters('paramName'), ' ', parameters('intValue'))]"
+                    }
+                },
+                "paramStringArray": {                    
+                    "parameters": [
+                        {
+                            "name": "paramName",
+                            "type": "string"
+                        },
+                        {
+                            "name": "strArrValue",
+                            "type": "array"
+                        }
+                    ],
+                    "output": {
+                        "type": "string",
+                        "value": "[concat(' -', parameters('paramName'), ' @', replace(replace(replace(string(parameters('strArrValue')), '[', '('), ']', ')'), '\"', ''''))]"
+                    }
+                },
+                "paramIntArray": {
+                    "parameters": [
+                        {
+                            "name": "paramName",
+                            "type": "string"
+                        },
+                        {
+                            "name": "intArrValue",
+                            "type": "array"
+                        }
+                    ],
+                    "output": {
+                        "type": "string",
+                        "value": "[concat(' -', parameters('paramName'), ' @', replace(replace(string(parameters('intArrValue')), '[', '('), ']', ')'))]"
+                    }
+                },
+                "scriptStart": {
+                    "parameters": [
+                        {
+                            "name": "scriptName",
+                            "type": "string"
+                        }
+                    ],
+                    "output": {
+                        "type": "string",
+                        "value": "[concat('powershell.exe', ' -Command \"./', parameters('scriptName'))]"
+                    }
+                },
+                "scriptEnd": {
+                    "parameters": [],
+                    "output": {
+                        "type": "string",
+                        "value": "\""
+                    }
+                }
+            }
+        }
+    ],
+    "parameters": { 
+        "location":{
+            "type": "string",
+            "metadata": {
+                "description": "The location of the virtual network and DNS forwarders must be identical."
+            }
+        }
+    },
+    "variables": { },
+    "resources": [
+    ],
+    "outputs": {
+    }
+}

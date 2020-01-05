@@ -5,42 +5,7 @@ param(
     [switch]$SkipUserDisable
 )
 
-function ConvertFrom-EncodedJson {
-    param(
-        [string]$String
-    )
-
-    $String = $String.
-        Replace("*", "`"").
-        Replace("<", "[").
-        Replace(">", "]").
-        Replace("^", "{").
-        Replace("%", "}")
-    
-    return (ConvertFrom-Json -InputObject $String)
-}
-
-function Write-OdjBlob {
-    param(
-        [string]$OdjBlob,
-        [string]$Path
-    )
-
-    $byteArray = [System.Byte[]]@()
-    $byteArray += 255
-    $byteArray += 254
-
-    $byteArray += [System.Text.Encoding]::Unicode.GetBytes($OdjBlob)
-
-    $byteArray += 0
-    $byteArray += 0
-
-    $writer = [System.IO.File]::Create($Path)
-    $writer.Write($byteArray, 0, $byteArray.Length)
-
-    $writer.Close()
-    $writer.Dispose()
-}
+Import-Module .\AzureFilesArmUtilities.psm1
 
 Install-WindowsFeature `
         -Name "DNS" `
@@ -52,9 +17,10 @@ $dnsForwarderOdj = [System.IO.Path]::Combine($path, "dnsforwarder.odj")
 $djOutput = [System.IO.Path]::Combine($path, "djOutput.txt")
 
 Write-OdjBlob -OdjBlob $OdjBlob -Path $dnsForwarderOdj
-Invoke-Expression `
-        -Command "djoin.exe /requestodj /loadfile `"$dnsForwarderOdj`" /windowspath $($env:windir) /localos" | `
-    Out-File -FilePath $djOutput
+Join-WindowsMachine `
+    -OdjBlobPath $dnsForwarderOdj `
+    -WindowsPath $env:windir `
+    -JoinOutputPath $djOutput
 
 $forwardingRules = ConvertFrom-EncodedJson -String $EncodedForwardingRules
 foreach($forwardRule in $forwardingRules) {
@@ -66,8 +32,10 @@ foreach($forwardRule in $forwardingRules) {
     }
 }
 
-ipconfig.exe /renew | Out-Null 
-ipconfig.exe /flushdns | Out-Null
+Clear-DnsClientCache
+Clear-DnsServerCache `
+    -Confirm:$false `
+    -Force
 
 if (!$SkipUserDisable) {
     Disable-LocalUser -Name $TempUser

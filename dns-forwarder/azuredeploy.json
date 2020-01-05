@@ -28,7 +28,9 @@
         },
         "dnsForwarderRootName": {
             "type": "string",
-            "defaultValue": "DnsForwarder",
+            "defaultValue": "DnsFwder",
+            "minLength": 3,
+            "maxLength": 11,
             "metadata": {
                 "description": "The name of the DNS VM."
             }
@@ -39,13 +41,13 @@
                 "description": "A temporary password for the DNS VMs to use until they are domain joined."
             }
         },
-        "odjBlob1": {
+        "odjBlob0": {
             "type": "securestring",
             "metadata": {
                 "description": "The offline domain join blob for the DNS forwarder #1."
             }
         },
-        "odjBlob2": {
+        "odjBlob1": {
             "type": "securestring",
             "metadata": {
                 "description": "The offline domain join blob for the DNS forwarder #2."
@@ -61,8 +63,10 @@
     "variables": {
         "vmTempUsername": "tempUser",
         "vmSkuName": "2019-Datacenter-Core",
+        "vmDiskType": "StandardSSD_LRS",
         "vmSize": "Standard_DS1_v2",
-        "scriptURL": "https://raw.githubusercontent.com/Azure-Samples/azure-files-samples/master/dns-forwarder/configureVM.ps1",
+        "sharedUtilitiesURL": "https://raw.githubusercontent.com/wmgries/azure-files-samples/dfsn/shared/AzureFilesArmUtilities.psm1",
+        "scriptURL": "https://raw.githubusercontent.com/wmgries/azure-files-samples/dfsn/dns-forwarder/configureVM.ps1",
         "scriptName": "configureVM.ps1"
     },
     "functions": [
@@ -189,176 +193,67 @@
     ],
     "resources": [
         {
-            "type": "Microsoft.Compute/availabilitySets",
-            "apiVersion": "2019-03-01",
-            "name": "[concat(parameters('dnsForwarderRootName'), '-AvailabilitySet')]",
-            "location": "[parameters('location')]",
-            "sku": {
-                "name": "Aligned"
-            },
-            "properties":{
-                "platformUpdateDomainCount": 5,
-                "platformFaultDomainCount": 2,
-                "virtualMachines": [
-                    { 
-                        "id": "[resourceId('Microsoft.Compute/virtualMachines', concat(parameters('dnsForwarderRootName'), '-1'))]" 
+            "name": "deployVMs",
+            "type": "Microsoft.Resources/deployments",
+            "apiVersion": "2018-05-01",
+            "properties": {
+                "mode": "Incremental",
+                "parameters": {
+                    "location": {
+                        "value": "[parameters('location')]"
                     },
-                    {
-                        "id": "[resourceId('Microsoft.Compute/virtualMachines', concat(parameters('dnsForwarderRootName'), '-2'))]"
+                    "vmResourceRootName": {
+                        "value": "[parameters('dnsForwarderRootName')]"
+                    },
+                    "vmResourceIterator": {
+                        "value": 0
+                    },
+                    "vmSubnetId": {
+                        "value": "[concat(resourceId(parameters('virtualNetworkResourceGroupName'), 'Microsoft.Network/virtualNetworks', parameters('virtualNetworkName')), '/subnets/', parameters('virtualNetworkSubnetName'))]"
+                    },
+                    "vmDefaultUsername": {
+                        "value": "[variables('vmTempUsername')]"
+                    },
+                    "vmDefaultPassword": {
+                        "value": "[parameters('dnsForwarderTempPassword')]"
+                    },
+                    "vmSkuName": {
+                        "value": "[variables('vmSkuName')]"
+                    },
+                    "vmDiskType": {
+                        "value": "[variables('vmDiskType')]"
+                    },
+                    "vmSize": {
+                        "value": "[variables('vmSize')]"
                     }
-                ]
+                },
+                "templateLink": {
+                    "uri": "https://raw.githubusercontent.com/wmgries/azure-files-samples/dfsn/shared/deployVMs.json"
+                }
             }
         },
         {
-            "type": "Microsoft.Compute/virtualMachines",
-            "apiVersion": "2019-03-01",
-            "name": "[concat(parameters('dnsForwarderRootName'), '-1')]",
+            "type": "Microsoft.Compute/virtualMachines/extensions",
+            "name": "[concat(parameters('dnsForwarderRootName'), '-0/setupscript')]",
+            "apiVersion": "2018-06-01",
             "location": "[parameters('location')]",
             "dependsOn": [
-                "[resourceId('Microsoft.Compute/availabilitySets', concat(parameters('dnsForwarderRootName'), '-AvailabilitySet'))]",
-                "[resourceId('Microsoft.Network/networkInterfaces', concat(parameters('dnsForwarderRootName'), '-1-NIC'))]"
+                "[resourceId('Microsoft.Resources/deployments', 'deployVMs')]"
             ],
             "properties": {
-                "availabilitySet": {
-                    "id": "[resourceId('Microsoft.Compute/availabilitySets', concat(parameters('dnsForwarderRootName'), '-AvailabilitySet'))]"
+                "publisher": "Microsoft.Compute",
+                "type": "CustomScriptExtension",
+                "typeHandlerVersion": "1.9",
+                "autoUpgradeMinorVersion": true,
+                "settings": {
+                    "fileUris": [ 
+                        "[variables('scriptURL')]",
+                        "[variables('sharedUtilitiesURL')]"
+                    ]
                 },
-                "hardwareProfile": {
-                    "vmSize": "[variables('vmSize')]"
-                },
-                "storageProfile": {
-                    "imageReference": {
-                        "publisher": "MicrosoftWindowsServer",
-                        "offer": "WindowsServer",
-                        "sku": "[variables('vmSkuName')]",
-                        "version": "latest"
-                    },
-                    "osDisk": {
-                        "osType": "Windows",
-                        "name": "[concat(parameters('dnsForwarderRootName'), '-1-OsDisk')]",
-                        "createOption": "FromImage",
-                        "caching": "ReadWrite",
-                        "managedDisk": {
-                            "storageAccountType": "StandardSSD_LRS"
-                        },
-                        "diskSizeGB": 127
-                    },
-                    "dataDisks": []
-                },
-                "osProfile": {
-                    "computerName": "[concat(parameters('dnsForwarderRootName'), '-1')]",
-                    "adminUsername": "[variables('vmTempUsername')]",
-                    "adminPassword": "[parameters('dnsForwarderTempPassword')]",
-                    "windowsConfiguration": {
-                        "provisionVMAgent": true,
-                        "enableAutomaticUpdates": true
-                    },
-                    "secrets": [],
-                    "allowExtensionOperations": true
-                },
-                "networkProfile": {
-                    "networkInterfaces": [{
-                        "id": "[resourceId('Microsoft.Network/networkInterfaces', concat(parameters('dnsForwarderRootName'), '-1-NIC'))]"
-                    }]
-                },
-                "licenseType": "Windows_Server"
-            }
-        },
-        {
-            "type": "Microsoft.Compute/virtualMachines",
-            "apiVersion": "2019-03-01",
-            "name": "[concat(parameters('dnsForwarderRootName'), '-2')]",
-            "location": "[parameters('location')]",
-            "dependsOn": [
-                "[resourceId('Microsoft.Compute/availabilitySets', concat(parameters('dnsForwarderRootName'), '-AvailabilitySet'))]",
-                "[resourceId('Microsoft.Network/networkInterfaces', concat(parameters('dnsForwarderRootName'), '-2-NIC'))]"
-            ],
-            "properties": {
-                "availabilitySet": {
-                    "id": "[resourceId('Microsoft.Compute/availabilitySets', concat(parameters('dnsForwarderRootName'), '-AvailabilitySet'))]"
-                },
-                "hardwareProfile": {
-                    "vmSize": "[variables('vmSize')]"
-                },
-                "storageProfile": {
-                    "imageReference": {
-                        "publisher": "MicrosoftWindowsServer",
-                        "offer": "WindowsServer",
-                        "sku": "[variables('vmSkuName')]",
-                        "version": "latest"
-                    },
-                    "osDisk": {
-                        "osType": "Windows",
-                        "name": "[concat(parameters('dnsForwarderRootName'), '-2-OsDisk')]",
-                        "createOption": "FromImage",
-                        "caching": "ReadWrite",
-                        "managedDisk": {
-                            "storageAccountType": "StandardSSD_LRS"
-                        },
-                        "diskSizeGB": 127
-                    },
-                    "dataDisks": []
-                },
-                "osProfile": {
-                    "computerName": "[concat(parameters('dnsForwarderRootName'), '-2')]",
-                    "adminUsername": "[variables('vmTempUsername')]",
-                    "adminPassword": "[parameters('dnsForwarderTempPassword')]",
-                    "windowsConfiguration": {
-                        "provisionVMAgent": true,
-                        "enableAutomaticUpdates": true
-                    },
-                    "secrets": [],
-                    "allowExtensionOperations": true
-                },
-                "networkProfile": {
-                    "networkInterfaces": [{
-                        "id": "[resourceId('Microsoft.Network/networkInterfaces', concat(parameters('dnsForwarderRootName'), '-2-NIC'))]"
-                    }]
-                },
-                "licenseType": "Windows_Server"
-            }
-        },
-        {
-            "type": "Microsoft.Network/networkInterfaces",
-            "apiVersion": "2019-09-01",
-            "name": "[concat(parameters('dnsForwarderRootName'), '-1-NIC')]",
-            "location": "[parameters('location')]",
-            "properties": {
-                "ipConfigurations": [{
-                    "name": "defaultIpConfig",
-                    "properties": {
-                        "privateIPAllocationMethod": "Dynamic",
-                        "subnet": {
-                            "id": "[concat(resourceId(parameters('virtualNetworkResourceGroupName'), 'Microsoft.Network/virtualNetworks', parameters('virtualNetworkName')), '/subnets/', parameters('virtualNetworkSubnetName'))]"
-                        },
-                        "primary": true,
-                        "privateIPAddressVersion": "IPv4"
-                    }
-                }],
-                "dnsSettings": { "dnsServers": [] },
-                "enableAcceleratedNetworking": false,
-                "enableIPForwarding": false
-            }
-        },
-        {
-            "type": "Microsoft.Network/networkInterfaces",
-            "apiVersion": "2019-09-01",
-            "name": "[concat(parameters('dnsForwarderRootName'), '-2-NIC')]",
-            "location": "[parameters('location')]",
-            "properties": {
-                "ipConfigurations": [{
-                    "name": "defaultIpConfig",
-                    "properties": {
-                        "privateIPAllocationMethod": "Dynamic",
-                        "subnet": {
-                            "id": "[concat(resourceId(parameters('virtualNetworkResourceGroupName'), 'Microsoft.Network/virtualNetworks', parameters('virtualNetworkName')), '/subnets/', parameters('virtualNetworkSubnetName'))]"
-                        },
-                        "primary": true,
-                        "privateIPAddressVersion": "IPv4"
-                    }
-                }],
-                "dnsSettings": { "dnsServers": [] },
-                "enableAcceleratedNetworking": false,
-                "enableIPForwarding": false
+                "protectedSettings": {
+                    "commandToExecute": "[concat(ps.scriptStart(variables('scriptName')), ps.paramString('EncodedForwardingRules', parameters('encodedForwardingRules')), ps.paramString('OdjBlob', parameters('odjBlob0')), ps.paramString('TempUser', variables('vmTempUsername')), ps.scriptEnd())]"
+                }
             }
         },
         {
@@ -367,7 +262,7 @@
             "apiVersion": "2018-06-01",
             "location": "[parameters('location')]",
             "dependsOn": [
-                "[resourceId('Microsoft.Compute/virtualMachines', concat(parameters('dnsForwarderRootName'), '-1'))]"
+                "[resourceId('Microsoft.Resources/deployments', 'deployVMs')]"
             ],
             "properties": {
                 "publisher": "Microsoft.Compute",
@@ -375,43 +270,25 @@
                 "typeHandlerVersion": "1.9",
                 "autoUpgradeMinorVersion": true,
                 "settings": {
-                    "fileUris": [ "[variables('scriptURL')]" ]
+                    "fileUris": [ 
+                        "[variables('scriptURL')]",
+                        "[variables('sharedUtilitiesURL')]"
+                    ]
                 },
                 "protectedSettings": {
                     "commandToExecute": "[concat(ps.scriptStart(variables('scriptName')), ps.paramString('EncodedForwardingRules', parameters('encodedForwardingRules')), ps.paramString('OdjBlob', parameters('odjBlob1')), ps.paramString('TempUser', variables('vmTempUsername')), ps.scriptEnd())]"
                 }
             }
-        },
-        {
-            "type": "Microsoft.Compute/virtualMachines/extensions",
-            "name": "[concat(parameters('dnsForwarderRootName'), '-2/setupscript')]",
-            "apiVersion": "2018-06-01",
-            "location": "[parameters('location')]",
-            "dependsOn": [
-                "[resourceId('Microsoft.Compute/virtualMachines', concat(parameters('dnsForwarderRootName'), '-2'))]"
-            ],
-            "properties": {
-                "publisher": "Microsoft.Compute",
-                "type": "CustomScriptExtension",
-                "typeHandlerVersion": "1.9",
-                "autoUpgradeMinorVersion": true,
-                "settings": {
-                    "fileUris": [ "[variables('scriptURL')]" ]
-                },
-                "protectedSettings": {
-                    "commandToExecute": "[concat(ps.scriptStart(variables('scriptName')), ps.paramString('EncodedForwardingRules', parameters('encodedForwardingRules')), ps.paramString('OdjBlob', parameters('odjBlob2')), ps.paramString('TempUser', variables('vmTempUsername')), ps.scriptEnd())]"
-                }
-            }
         }
     ],
     "outputs": {
+        "dnsForwarder0-PrivateIP": {
+            "type": "string",
+            "value": "[reference('deployVMs').outputs.vm0NIC.value.ipConfigurations[0].properties.privateIPAddress]"
+        }, 
         "dnsForwarder1-PrivateIP": {
             "type": "string",
-            "value": "[reference(resourceId('Microsoft.Network/networkInterfaces', concat(parameters('dnsForwarderRootName'), '-1-NIC'))).ipConfigurations[0].properties.privateIPAddress]"
-        }, 
-        "dnsForwarder2-PrivateIP": {
-            "type": "string",
-            "value": "[reference(resourceId('Microsoft.Network/networkInterfaces', concat(parameters('dnsForwarderRootName'), '-2-NIC'))).ipConfigurations[0].properties.privateIPAddress]"
+            "value": "[reference('deployVMs').outputs.vm1NIC.value.ipConfigurations[0].properties.privateIPAddress]"
         }
     }
 }
