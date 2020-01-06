@@ -124,15 +124,151 @@
         }
     ],
     "parameters": { 
-        "location":{
+        "location": {
             "type": "string",
             "metadata": {
                 "description": "The location of the virtual network and DNS forwarders must be identical."
             }
+        },
+        "dfsnRootName": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 11,
+            "metadata": {
+                "description": "The root name of the DFS-N servers."
+            }
+        },
+        "dfsnResourceIterator": {
+            "type": "int",
+            "minValue": 0,
+            "maxValue": 999,
+            "metadata": {
+                "description": "The iterator to append to the end of a DFS-N VMs."
+            }
+        },
+        "dfsnVMSubnetId": {
+            "type": "string",
+            "metadata": {
+                "description": "The subnet id to add the DFS-N VMs to."
+            }
+        },
+        "dfsnTempPassword": {
+            "type": "securestring",
+            "metadata": {
+                "description": "A temporary password for the DFS-N VMs to use until they are domain joined."
+            }
+        },
+        "odjBlob0": {
+            "type": "securestring",
+            "metadata": {
+                "description": "The offline domain join blob for DFS-N #0."
+            }
+        },
+        "odjBlob1": {
+            "type": "securestring",
+            "metadata": {
+                "description": "The offline domain join blob for DFS-N #1."
+            }
         }
     },
-    "variables": { },
+    "variables": { 
+        "vmTempUsername": "tempUser",
+        "vmSkuName": "2019-Datacenter",
+        "vmDiskType": "StandardSSD_LRS",
+        "vmSize": "Standard_DS1_v2",
+        "sharedUtilitiesURL": "https://raw.githubusercontent.com/wmgries/azure-files-samples/dfsn/shared/AzureFilesArmUtilities.psm1",
+        "scriptURL": "https://raw.githubusercontent.com/wmgries/azure-files-samples/dfsn/dfsn/configureVM.ps1",
+        "scriptName": "configureVM.ps1"
+    },
     "resources": [
+        {
+            "name": "deployVMs",
+            "type": "Microsoft.Resources/deployments",
+            "apiVersion": "2018-05-01",
+            "properties": {
+                "mode": "Incremental",
+                "parameters": {
+                    "location": {
+                        "value": "[parameters('location')]"
+                    }, 
+                    "vmResourceRootName": {
+                        "value": "[parameters('dfsnRootName')]"
+                    }, 
+                    "vmResourceIterator": {
+                        "value": "[parameters('dfsnResourceIterator')]"
+                    },
+                    "vmSubnetId": {
+                        "value": "[parameters('dfsnVMSubnetId')]"
+                    },
+                    "vmDefaultUsername": {
+                        "value": "[variables('vmTempUsername')]"
+                    },
+                    "vmDefaultPassword": {
+                        "value": "[parameters('dfsnTempPassword')]"
+                    },
+                    "vmSkuName": {
+                        "value": "[variables('vmSkuName')]"
+                    },
+                    "vmDiskType": {
+                        "value": "[variables('vmDiskType')]"
+                    },
+                    "vmSize": {
+                        "value": "[variables('vmSize')]"
+                    }
+                },
+                "templateLink": {
+                    "uri": "https://raw.githubusercontent.com/wmgries/azure-files-samples/dfsn/shared/deployVMs.json"
+                }
+            }
+        },
+        {
+            "type": "Microsoft.Compute/virtualMachines/extensions",
+            "name": "[concat(parameters('dfsnRootName'), '-', string(parameters('dfsnResourceIterator')), '/setupscript')]",
+            "apiVersion": "2018-06-01",
+            "location": "[parameters('location')]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Resources/deployments', 'deployVMs')]"
+            ],
+            "properties": {
+                "publisher": "Microsoft.Compute",
+                "type": "CustomScriptExtension",
+                "typeHandlerVersion": "1.9",
+                "autoUpgradeMinorVersion": true,
+                "settings": {
+                    "fileUris": [ 
+                        "[variables('scriptURL')]",
+                        "[variables('sharedUtilitiesURL')]"
+                    ]
+                },
+                "protectedSettings": {
+                    "commandToExecute": "[concat(ps.scriptStart(variables('scriptName')), ps.paramString('OdjBlob', parameters('odjBlob0')), ps.paramString('TempUser', variables('vmTempUsername')), ps.scriptEnd())]"
+                }
+            }
+        },
+        {
+            "type": "Microsoft.Compute/virtualMachines/extensions",
+            "name": "[concat(parameters('dfsnRootName'), '-', string(add(parameters('dfsnResourceIterator'), 1)), '/setupscript')]",
+            "apiVersion": "2018-06-01",
+            "location": "[parameters('location')]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Resources/deployments', 'deployVMs')]"
+            ],
+            "properties": {
+                "publisher": "Microsoft.Compute",
+                "type": "CustomScriptExtension",
+                "typeHandlerVersion": "1.9",
+                "autoUpgradeMinorVersion": true,
+                "settings": {
+                    "fileUris": [ 
+                        "[variables('scriptURL')]",
+                        "[variables('sharedUtilitiesURL')]"
+                    ]
+                },
+                "protectedSettings": {
+                    "commandToExecute": "[concat(ps.scriptStart(variables('scriptName')), ps.paramString('OdjBlob', parameters('odjBlob1')), ps.paramString('TempUser', variables('vmTempUsername')), ps.scriptEnd())]"
+                }
+            }
+        }
     ],
     "outputs": {
     }
