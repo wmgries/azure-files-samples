@@ -176,6 +176,7 @@
         "vmSkuName": "2019-Datacenter",
         "vmDiskType": "StandardSSD_LRS",
         "vmSize": "Standard_DS1_v2",
+        "loadBalancerSku": "basic",
         "sharedUtilitiesURL": "https://raw.githubusercontent.com/wmgries/azure-files-samples/dfsn/shared/AzureFilesArmUtilities.psm1",
         "scriptURL": "https://raw.githubusercontent.com/wmgries/azure-files-samples/dfsn/dfsn/configureVM.ps1",
         "scriptName": "configureVM.ps1"
@@ -219,6 +220,114 @@
                 "templateLink": {
                     "uri": "https://raw.githubusercontent.com/wmgries/azure-files-samples/dfsn/shared/deployVMs.json"
                 }
+            }
+        },
+        {
+            "type": "Microsoft.Network/loadBalancers",
+            "name": "[concat(parameters('dfsnRootName'), '-LoadBalancer')]",
+            "apiVersion": "2019-09-01",
+            "location": "[parameters('location')]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Resources/deployments', 'deployVMs')]"
+            ],
+            "sku": {
+                "name": "[variables('loadBalancerSku')]"
+            },
+            "properties": {
+                "frontendIPConfigurations": [{
+                    "name": "LoadBalancerFrontEnd",
+                    "properties": {
+                        "privateIPAllocationMethod": "Dynamic",
+                        "privateIPAddressVersion": "IPv4",
+                        "subnet": {
+                            "id": "[parameters('dfsnVMSubnetId')]"
+                        }
+                    }
+                }],
+                "backendAddressPools": [{
+                    "name": "DFSN-Instances",
+                    "properties": { }
+                }],
+                "probes": [{
+                    "name": "SmbTest",
+                    "properties": {
+                        "protocol": "Tcp",
+                        "port": 445,
+                        "intervalInSeconds": 5,
+                        "numberOfProbes": 2
+                    }
+                }],
+                "loadBalancingRules": [{
+                    "name": "SMB",
+                    "properties": {
+                        "frontendIPConfiguration": {
+                            "id": "[concat(resourceId('Microsoft.Network/loadBalancers', concat(parameters('dfsnRootName'), '-LoadBalancer')), '/frontendIPConfigurations/LoadBalancerFrontEnd')]"
+                        },
+                        "frontendPort": 445,
+                        "backendPort": 445,
+                        "enableFloatingIP": false,
+                        "idleTimeoutInMinutes": 4,
+                        "protocol":"Tcp",
+                        "enableTcpReset": false,
+                        "loadDistribution": "SourceIPProtocol",
+                        "backendAddressPool": {
+                            "id": "[concat(resourceId('Microsoft.Network/loadBalancers', concat(parameters('dfsnRootName'), '-LoadBalancer')), '/backendAddressPools/DFSN-Instances')]"
+                        },
+                        "probe": {
+                            "id": "[concat(resourceId('Microsoft.Network/loadBalancers', concat(parameters('dfsnRootName'), '-LoadBalancer')), '/probes/SmbTest')]"
+                        }
+                    }
+                }],
+                "inboundNatRules": [],
+                "inboundNatPools": []
+            }
+        },
+        {
+            "type": "Microsoft.Network/networkInterfaces",
+            "apiVersion": "2019-09-01",
+            "name": "[concat(parameters('dfsnRootName'), '-', string(parameters('dfsnResourceIterator')), '-NIC')]",
+            "location": "[parameters('location')]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Resources/deployments', 'deployVMs')]",
+                "[resourceId('Microsoft.Network/loadBalancers', concat(parameters('dfsnRootName'), '-LoadBalancer'))]"
+            ],
+            "comments": "This resource has already been deployed in the deployVMs template, so the only purpose of this entry is to update the NIC to be a part of the load balancer backend address pool.",
+            "properties": {
+                "ipConfigurations": [{
+                    "name": "defaultIpConfig",
+                    "properties": {
+                        "subnet": {
+                            "id": "[reference('deployVMs').outputs.vm0NIC.value.ipConfigurations[0].properties.subnet.id]"
+                        },
+                        "loadBalancerBackendAddressPools": [{
+                            "id": "[concat(resourceId('Microsoft.Network/loadBalancers', concat(parameters('dfsnRootName'), '-LoadBalancer')), '/backendAddressPools/DFSN-Instances')]"
+                        }]
+                    }
+                }]
+            }
+        },
+        {
+            "type": "Microsoft.Network/networkInterfaces",
+            "apiVersion": "2019-09-01",
+            "name": "[concat(parameters('dfsnRootName'), '-', string(add(parameters('dfsnResourceIterator'), 1)), '-NIC')]",
+            "location": "[parameters('location')]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Resources/deployments', 'deployVMs')]",
+                "[resourceId('Microsoft.Network/loadBalancers', concat(parameters('dfsnRootName'), '-LoadBalancer'))]"
+            ],
+            "comments": "This resource has already been deployed in the deployVMs template, so the only purpose of this entry is to update the NIC to be a part of the load balancer backend address pool.",
+            "properties": {
+                "ipConfigurations": [{
+                    "name": "defaultIpConfig",
+                    "properties": {
+                        "subnet": {
+                            "id": "[reference('deployVMs').outputs.vm1NIC.value.ipConfigurations[0].properties.subnet.id]"
+                        },
+                        "loadBalancerBackendAddressPools": [{
+                            "id": "[concat(resourceId('Microsoft.Network/loadBalancers', concat(parameters('dfsnRootName'), '-LoadBalancer')), '/backendAddressPools/DFSN-Instances')]"
+                        }]
+                    }
+                }]
             }
         },
         {
@@ -271,5 +380,9 @@
         }
     ],
     "outputs": {
+        "loadBalancerPrivateIP": {
+            "type": "string",
+            "value": "[reference(concat(parameters('dfsnRootName'), '-LoadBalancer')).frontendIPConfigurations[0].properties.privateIPAddress]"
+        }
     }
 }
