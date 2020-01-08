@@ -169,6 +169,12 @@
             "metadata": {
                 "description": "The offline domain join blob for DFS-N #1."
             }
+        },
+        "encodedNamespaces": {
+            "type": "string",
+            "metadata": {
+                "description": "The DFS-N namespaces to be configured. Since these are passed to the PowerShell script, to simplify the exchange from the ARM template to the script, they are encoded as a string that is JSON with characters replaced. The encoding is as follows: \" => *, [[ => <, ]] => >,{ => ^, } => %. The PowerShell script is responsible for converting this back into an object array." 
+            }
         }
     },
     "variables": { 
@@ -350,7 +356,7 @@
                     ]
                 },
                 "protectedSettings": {
-                    "commandToExecute": "[concat(ps.scriptStart(variables('scriptName')), ps.paramString('OdjBlob', parameters('odjBlob0')), ps.paramString('TempUser', variables('vmTempUsername')), ps.scriptEnd())]"
+                    "commandToExecute": "[concat(ps.scriptStart(variables('scriptName')), ps.paramString('EncodedNamespaces', parameters('encodedNamespaces')), ps.paramString('ServerName', concat(parameters('dfsnRootName'), '-', string(parameters('dfsnResourceIterator')))), ps.paramString('OdjBlob', parameters('odjBlob0')), ps.paramString('TempUser', variables('vmTempUsername')), ps.scriptEnd())]"
                 }
             }
         },
@@ -374,7 +380,7 @@
                     ]
                 },
                 "protectedSettings": {
-                    "commandToExecute": "[concat(ps.scriptStart(variables('scriptName')), ps.paramString('OdjBlob', parameters('odjBlob1')), ps.paramString('TempUser', variables('vmTempUsername')), ps.scriptEnd())]"
+                    "commandToExecute": "[concat(ps.scriptStart(variables('scriptName')), ps.paramString('EncodedNamespaces', parameters('encodedNamespaces')), ps.paramString('ServerName', concat(parameters('dfsnRootName'), '-', string(add(parameters('dfsnResourceIterator'), 1)))), ps.paramString('OdjBlob', parameters('odjBlob1')), ps.paramString('TempUser', variables('vmTempUsername')), ps.scriptEnd())]"
                 }
             }
         }

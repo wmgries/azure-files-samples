@@ -24,7 +24,9 @@ Join-WindowsMachine `
 
 $forwardingRules = ConvertFrom-EncodedJson -String $EncodedForwardingRules
 foreach($forwardRule in $forwardingRules) {
-    $zoneName = Get-DnsServerZone | Where-Object { $_.ZoneName -eq $forwardRule.domainName }
+    $zoneName = Get-DnsServerZone | `
+        Where-Object { $_.ZoneName -eq $forwardRule.domainName }
+    
     if ($null -eq $zoneName) {
         Add-DnsServerConditionalForwarderZone `
             -Name $forwardRule.domainName `

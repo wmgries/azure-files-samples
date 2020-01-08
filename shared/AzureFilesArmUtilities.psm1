@@ -62,3 +62,43 @@ function Join-WindowsMachine {
         -Command "djoin.exe /requestodj /loadfile `"$OdjBlobPath`" /windowspath $WindowsPath /localos" | `
     Out-File -FilePath $JoinOutputPath
 }
+
+function New-RegistryItem {
+    param(
+        [string]$ParentPath,
+        [string]$Name
+    )
+
+    $regItem = Get-ChildItem -Path $ParentPath | `
+        Where-Object { $_.PSChildName -eq $Name }
+    
+    if ($null -eq $regItem) {
+        New-Item -Path ($ParentPath + "\" + $Name) | `
+            Out-Null
+    }
+}
+
+function New-RegistryItemProperty {
+    param(
+        [string]$Path,
+        [string]$Name,
+        [string]$Value
+    )
+
+    $regItemProperty = Get-ItemProperty -Path $Path | `
+        Where-Object { $_.Name -eq $Name }
+    
+    if ($null -eq $regItemProperty) {
+        New-ItemProperty `
+                -Path $Path `
+                -Name $Name `
+                -Value 1 | `
+            Out-Null
+    } else {
+        Set-ItemProperty `
+                -Path $Path `
+                -Name $Name `
+                -Value 1 | `
+            Out-Null
+    }
+}
