@@ -179,7 +179,7 @@
     },
     "variables": { 
         "vmTempUsername": "tempUser",
-        "vmSkuName": "2019-Datacenter",
+        "vmSkuName": "2019-Datacenter-Core",
         "vmDiskType": "StandardSSD_LRS",
         "vmSize": "Standard_DS1_v2",
         "loadBalancerSku": "basic",
