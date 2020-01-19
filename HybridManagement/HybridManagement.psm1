@@ -35,6 +35,33 @@ Add-Type -TypeDefinition @"
             DnsForwardingRules = new System.Collections.Generic.HashSet<DnsForwardingRule>();
         }
     }
+
+    public enum OSFeatureKind {
+        WindowsServerFeature,
+        WindowsClientCapability,
+        WindowsClientOptionalFeature
+    }
+
+    public class OSFeature {
+        public string Name { get; protected set; }
+        public string InternalOSName { get; protected set; }
+        public string Version { get; protected set; }
+        public bool Installed { get; protected set; }
+        public OSFeatureKind FeatureKind { get; protected set; }
+
+        public OSFeature(
+            string name, 
+            string internalOSName, 
+            string version, 
+            bool installed, 
+            OSFeatureKind featureKind) {
+                Name = name;
+                InternalOSName = internalOSName;
+                Version = version;
+                Installed = installed;
+                FeatureKind = featureKind;
+        }
+    }
 "@
 
 $azurePrivateDnsIp = "168.63.129.16"
@@ -135,49 +162,144 @@ function Get-WindowsInstallationType {
     return $installType
 }
 
-function Install-CmdletRequiredModules {
+function Get-OSFeature {
+    switch((Get-OSPlatform)) {
+        "Windows" {
+            $winVer = Get-OSVersion
+
+            switch((Get-WindowsInstallationType)) {
+                "Client" {
+                    Test-IsElevatedSession
+
+                    $features = Get-WindowsCapability -Online | `
+                        Select-Object `
+                            @{ Name= "InternalName"; Expression = { $_.Name } },
+                            @{ Name = "Name"; Expression = { $_.Name.Split("~")[0] } },
+                            @{ Name = "Field1"; Expression = { $_.Name.Split("~")[1] } }, 
+                            @{ Name = "Field2"; Expression = { $_.Name.Split("~")[2] } },
+                            @{ Name = "Language"; Expression = { $_.Name.Split("~")[3] } },
+                            @{ Name = "Version"; Expression = { $_.Name.Split("~")[4] } },
+                            @{ Name = "Installed"; Expression = { $_.State -eq "Installed" } } | `
+                        ForEach-Object {
+                            if (![string]::IsNullOrEmpty($_.Language)) {
+                                $Name = ($_.Name + "-" + $_.Language)
+                            } else {
+                                $Name = $_.Name
+                            }
+
+                            [OSFeature]::new(
+                                $Name, 
+                                $_.InternalName, 
+                                $_.Version, 
+                                $_.Installed, 
+                                [OSFeatureKind]::WindowsClientCapability)
+                        }
+
+                    $features += Get-WindowsOptionalFeature -Online | 
+                        Select-Object `
+                            @{ Name = "InternalName"; Expression = { $_.FeatureName } }, 
+                            @{ Name = "Name"; Expression = { $_.FeatureName } }, 
+                            @{ Name = "Installed"; Expression = { $_.State -eq "Enabled" } } | `
+                        ForEach-Object {
+                            [OSFeature]::new(
+                                $_.Name, 
+                                $_.InternalName, 
+                                $winVer, 
+                                $_.Installed, 
+                                [OSFeatureKind]::WindowsClientOptionalFeature)
+                        }
+                }
+
+                { ($_ -eq "Server") -or ($_ -eq "Server Core") } {
+                    $features = Get-WindowsFeature | `
+                        Select-Object Name, Installed | `
+                        ForEach-Object {
+                            [OSFeature]::new(
+                                $_.Name, 
+                                $_.Name, 
+                                $winVer, 
+                                $_.Installed, 
+                                [OSFeatureKind]::WindowsServerFeature)
+                        }
+                }
+            }
+        }
+
+        "Linux" {
+            throw [System.NotImplementedException]::new()
+        }
+
+        "OSX" {
+            throw [System.NotImplementedException]::new()
+        }
+
+        default {
+            throw [System.NotImplementedException]::new()
+        }
+    }
+
+    return $features
+}
+
+function Install-OSFeature {
     param(
-        [string[]]$WindowsClientCapabilities,
-        [string[]]$WindowsServerFeatures
+        [Parameter(Mandatory=$true)]
+        [string[]]$Name,
+
+        #[Parameter(Mandatory=$true, ParameterSetName="WindowsServer")]
+        #[switch]$WindowsServerFeature,
+
+        [Parameter(Mandatory=$true, ParameterSetName="WindowsClientCapability")]
+        [switch]$WindowsClientCapability,
+
+        [Parameter(Mandatory=$true, ParameterSetName="WindowsClientOptionalFeature")]
+        [switch]$WindowsClientOptionalFeature
     )
 
     switch ((Get-OSPlatform)) {
         "Windows" {
-            Test-IsElevatedSession
-
             switch((Get-WindowsInstallationType)) {
                 "Client" {
-                    $foundMatches = $WindowsClientCapabilities | `
-                        ForEach-Object { Get-WindowsCapability -Online -Name "$_*" } | `
-                        Select-Object Name, @{ Name = "FriendlyName"; Expression = { $_.Name.Split("~")[0] } }, State
-                    
-                    $notFoundMatches = $WindowsClientCapabilities | `
-                        Where-Object { $_ -notin ($foundMatches | Select-Object -ExpandProperty FriendlyName) }
-                    
-                    if ($null -ne $notFoundMatches) {
-                        $sb = [System.Text.StringBuilder]::new()
-                        $sb.Append("Could not find the following required modules: ")
-                        for($i = 0; $i -lt $notFoundMatches.Length; $i++) {
-                            if ($i -gt 0) {
-                                $sb.Append(", ")
+                    Test-IsElevatedSession
+
+                    if ($WindowsClientCapability) {
+                        $foundMatches = $Name | `
+                            ForEach-Object { Get-WindowsCapability -Online -Name "$_*" } | `
+                            Select-Object Name, @{ Name = "FriendlyName"; Expression = { $_.Name.Split("~")[0] } }, State
+                        
+                        $notFoundMatches = $Name | `
+                            Where-Object { $_ -notin ($foundMatches | Select-Object -ExpandProperty FriendlyName) }
+                        
+                        if ($null -ne $notFoundMatches) {
+                            $sb = [System.Text.StringBuilder]::new()
+                            $sb.Append("Could not find the following required modules: ")
+                            for($i = 0; $i -lt $notFoundMatches.Length; $i++) {
+                                if ($i -gt 0) {
+                                    $sb.Append(", ")
+                                }
+
+                                $sb.Append($notFoundMatches[$i])
                             }
 
-                            $sb.Append($notFoundMatches[$i])
+                            $sb.Append(". You may need to install an external package, such as the RSAT package prior to Windows 10 version 1809. RSAT can be downloaded via https://www.microsoft.com/download/details.aspx?id=45520.")
+
+                            Write-Error -Message $sb.ToString() -ErrorAction Stop
                         }
 
-                        $sb.Append(". You may need to install an external package, such as the RSAT package prior to Windows 10 version 1809. RSAT can be downloaded via https://www.microsoft.com/download/details.aspx?id=45520.")
-
-                        Write-Error -Message $sb.ToString() -ErrorAction Stop
+                        $foundMatches | `
+                            Where-Object { $_.State -eq "NotPresent" } | `
+                            Add-WindowsCapability -Online | `
+                            Out-Null
                     }
 
-                    $foundMatches | `
-                        Where-Object { $_.State -eq "NotPresent" } | `
-                        Add-WindowsCapability -Online | `
-                        Out-Null
+                    if ($WindowsClientOptionalFeature) {
+                        Enable-WindowsOptionalFeature -Online -FeatureName $Name | `
+                            Out-Null
+                    }
                 }
         
                 { ($_ -eq "Server") -or ($_ -eq "Server Core") } {
-                    Install-WindowsFeature -Name $WindowsServerFeatures | `
+                    Install-WindowsFeature -Name $Name | `
                         Out-Null
                 }
         
@@ -655,15 +777,18 @@ function Join-OfflineMachine {
             Write-OdjBlob -OdjBlob $OdjBlob -Path $tempFile
 
             $sb = [System.Text.StringBuilder]::new()
-            $sb.Append("djoin.exe /requestodj")
-            $sb.Append(" /loadfile $tempFile")
-            $sb.Append(" /windowspath $WindowsPath")
-            $sb.Append(" /localos")
+            $sb.Append("djoin.exe /requestodj") | Out-Null
+            $sb.Append(" /loadfile $tempFile") | Out-Null
+            $sb.Append(" /windowspath $WindowsPath") | Out-Null
+            $sb.Append(" /localos") | Out-Null
 
             $djoinResult = Invoke-Expression -Command $sb.ToString()
-            if ($djoinResult -notlike "*successfully*") {
+            if ($djoinResult -like "*successfully*") {
+                Write-Information -MessageData "Machine successfully provisioned. A reboot is required for changes to be applied."
+                Remove-Item -Path $tempFile
+            } else {
                 Write-Error `
-                        -Message "Machine $MachineName failed to provision. DJoin output: $djoinResult" `
+                        -Message "Machine failed to provision. DJoin output: $djoinResult" `
                         -ErrorAction Stop
             }
         }
@@ -1324,4 +1449,6 @@ Export-ModuleMember -Function `
     "New-RegistryItemProperty",
     "Push-AzDnsServerConfiguration",
     "Push-OnPremDnsServerConfiguration",
-    "Get-ADComputerInternal"
+    "Get-ADComputerInternal",
+    "Install-OSFeature",
+    "Get-OSFeature"
