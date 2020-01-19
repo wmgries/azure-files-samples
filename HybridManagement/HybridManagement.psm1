@@ -279,7 +279,7 @@ function Get-ADComputerInternal {
                 $parameters += @{ "Properties" = $Properties }
             }
 
-            if ($null -ne $Server) {
+            if (![string]::IsNullOrEmpty($Server)) {
                 $parameters += @{ "Server" = $Server }
             }
 
@@ -422,7 +422,10 @@ function Register-OfflineMachine {
         $properties += @{ "Domain" = $Domain }
 
         if (![string]::IsNullOrEmpty($MachineName)) {
-            $computer = Get-ADComputerInternal -Filter { "Name" -eq $MachineName }
+            $computer = Get-ADComputerInternal `
+                    -Filter "Name -eq `"$MachineName`"" `
+                    -Server $Domain
+
             if ($null -ne $computer) {
                 throw [System.ArgumentException]::new(
                     "Machine $MachineName already exists.", "MachineName")
@@ -434,55 +437,55 @@ function Register-OfflineMachine {
 
         $properties += @{ "MachineName" = $MachineName }
 
-        if (![string]::IsNullOrEmpty($MachineOU)) {
+        if ($PSBoundParameters.ContainsKey("MachineOU")) {
             throw [System.NotImplementedException]::new()
         }
     
-        if (![string]::IsNullOrEmpty($DCName)) {
+        if ($PSBoundParameters.ContainsKey("DCName")) {
             throw [System.NotImplementedException]::new()
         }
     
-        if (!$Reuse) {
+        if ($PSBoundParameters.ContainsKey("Reuse")) {
             throw [System.NotImplementedException]::new()
         }
         
-        if (!$NoSearch) {
+        if ($PSBoundParameters.ContainsKey("NoSearch")) {
             throw [System.NotImplementedException]::new()
         }
         
-        if (!$DefaultPassword) {
+        if ($PSBoundParameters.ContainsKey("DefaultPassword")) {
             throw [System.NotImplementedException]::new()
         }
     
-        if (!$RootCACertificates) {
+        if ($PSBoundParameters.ContainsKey("RootCACertificates")) {
             throw [System.NotImplementedException]::new()
         }
     
-        if (![string]::IsNullOrEmpty($CertificateTemplate)) {
+        if ($PSBoundParameters.ContainsKey("CertificateTemplate")) {
             throw [System.NotImplementedException]::new()
         }
     
-        if ($null -eq $PolicyNames) {
+        if ($PSBoundParameters.ContainsKey("PolicyNames")) {
             throw [System.NotImplementedException]::new()
         }
     
-        if ($null -eq $PolicyPaths) {
+        if ($PSBoundParameters.ContainsKey("PolicyPaths")) {
             throw [System.NotImplementedException]::new()
         }
         
-        if (![string]::IsNullOrEmpty($Netbios)) {
+        if ($PSBoundParameters.ContainsKey("Netbios")) {
             throw [System.NotImplementedException]::new()
         }
         
-        if (![string]::IsNullOrEmpty($PersistentSite)) {
+        if ($PSBoundParameters.ContainsKey("PersistentSite")) {
             throw [System.NotImplementedException]::new()
         }
     
-        if (![string]::IsNullOrEmpty($DynamicSite)) {
+        if ($PSBoundParameters.ContainsKey("DynamicSite")) {
             throw [System.NotImplementedException]::new()
         }
     
-        if (![string]::IsNullOrEmpty($PrimaryDNS)) {
+        if ($PSBoundParameters.ContainsKey("PrimaryDNS")) {
             throw [System.NotImplementedException]::new()
         }
 
@@ -555,66 +558,66 @@ function Register-OfflineMachineWindows {
     )
 
     process {
-        if (![string]::IsNullOrEmpty($MachineOU)) {
+        if ($PSBoundParameters.ContainsKey("MachineOU")) {
             throw [System.NotImplementedException]::new()
         }
     
-        if (![string]::IsNullOrEmpty($DCName)) {
+        if ($PSBoundParameters.ContainsKey("DCName")) {
             throw [System.NotImplementedException]::new()
         }
     
-        if (!$Reuse) {
+        if ($PSBoundParameters.ContainsKey("Reuse")) {
             throw [System.NotImplementedException]::new()
         }
         
-        if (!$NoSearch) {
+        if ($PSBoundParameters.ContainsKey("NoSearch")) {
             throw [System.NotImplementedException]::new()
         }
         
-        if (!$DefaultPassword) {
+        if ($PSBoundParameters.ContainsKey("DefaultPassword")) {
             throw [System.NotImplementedException]::new()
         }
     
-        if (!$RootCACertificates) {
+        if ($PSBoundParameters.ContainsKey("RootCACertificates")) {
             throw [System.NotImplementedException]::new()
         }
     
-        if (![string]::IsNullOrEmpty($CertificateTemplate)) {
+        if ($PSBoundParameters.ContainsKey("CertificateTemplate")) {
             throw [System.NotImplementedException]::new()
         }
     
-        if ($null -eq $PolicyNames) {
+        if ($PSBoundParameters.ContainsKey("PolicyNames")) {
             throw [System.NotImplementedException]::new()
         }
     
-        if ($null -eq $PolicyPaths) {
+        if ($PSBoundParameters.ContainsKey("PolicyPaths")) {
             throw [System.NotImplementedException]::new()
         }
         
-        if (![string]::IsNullOrEmpty($Netbios)) {
+        if ($PSBoundParameters.ContainsKey("Netbios")) {
             throw [System.NotImplementedException]::new()
         }
         
-        if (![string]::IsNullOrEmpty($PersistentSite)) {
+        if ($PSBoundParameters.ContainsKey("PersistentSite")) {
             throw [System.NotImplementedException]::new()
         }
     
-        if (![string]::IsNullOrEmpty($DynamicSite)) {
+        if ($PSBoundParameters.ContainsKey("DynamicSite")) {
             throw [System.NotImplementedException]::new()
         }
     
-        if (![string]::IsNullOrEmpty($PrimaryDNS)) {
+        if ($PSBoundParameters.ContainsKey("PrimaryDNS")) {
             throw [System.NotImplementedException]::new()
         }
 
         $sb = [System.Text.StringBuilder]::new()
-        $sb.Append("djoin.exe /provision")
+        $sb.Append("djoin.exe /provision") | Out-Null
 
-        $sb.Append(" /domain $Domain")
-        $sb.Append(" /machine $MachineName")
+        $sb.Append(" /domain $Domain") | Out-Null
+        $sb.Append(" /machine $MachineName") | Out-Null
 
         $tempFile = [System.IO.Path]::GetTempFileName()
-        $sb.Append(" /savefile $tempFile")
+        $sb.Append(" /savefile $tempFile") | Out-Null
         
         $djoinResult = Invoke-Expression -Command $sb.ToString()
 
@@ -1320,4 +1323,5 @@ Export-ModuleMember -Function `
     "New-RegistryItem",
     "New-RegistryItemProperty",
     "Push-AzDnsServerConfiguration",
-    "Push-OnPremDnsServerConfiguration"
+    "Push-OnPremDnsServerConfiguration",
+    "Get-ADComputerInternal"
