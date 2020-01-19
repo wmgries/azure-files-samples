@@ -93,7 +93,7 @@ function Get-IsElevatedSession {
 }
 
 function Test-IsElevatedSession {
-    if ((Get-IsElevatedSession)) {
+    if (!(Get-IsElevatedSession)) {
         Write-Error `
             -Message "This cmdlet requires an elevated PowerShell session." `
             -ErrorAction Stop
@@ -272,16 +272,16 @@ function Install-OSFeature {
                         
                         if ($null -ne $notFoundMatches) {
                             $sb = [System.Text.StringBuilder]::new()
-                            $sb.Append("Could not find the following required modules: ")
+                            $sb.Append("Could not find the following required modules: ") | Out-Null
                             for($i = 0; $i -lt $notFoundMatches.Length; $i++) {
                                 if ($i -gt 0) {
-                                    $sb.Append(", ")
+                                    $sb.Append(", ") | Out-Null
                                 }
 
-                                $sb.Append($notFoundMatches[$i])
+                                $sb.Append($notFoundMatches[$i]) | Out-Null
                             }
 
-                            $sb.Append(". You may need to install an external package, such as the RSAT package prior to Windows 10 version 1809. RSAT can be downloaded via https://www.microsoft.com/download/details.aspx?id=45520.")
+                            $sb.Append(". You may need to install an external package, such as the RSAT package prior to Windows 10 version 1809. RSAT can be downloaded via https://www.microsoft.com/download/details.aspx?id=45520.") | Out-Null
 
                             Write-Error -Message $sb.ToString() -ErrorAction Stop
                         }
@@ -813,12 +813,14 @@ function New-RegistryItem {
         [string]$Name
     )
 
-    $regItem = Get-ChildItem -Path $ParentPath | `
-        Where-Object { $_.PSChildName -eq $Name }
-    
-    if ($null -eq $regItem) {
-        New-Item -Path ($ParentPath + "\" + $Name) | `
-            Out-Null
+    if ((Get-OSPlatform) -eq "Windows") {
+        $regItem = Get-ChildItem -Path $ParentPath | `
+            Where-Object { $_.PSChildName -eq $Name }
+        
+        if ($null -eq $regItem) {
+            New-Item -Path ($ParentPath + "\" + $Name) | `
+                Out-Null
+        }
     }
 }
 
@@ -829,21 +831,23 @@ function New-RegistryItemProperty {
         [string]$Value
     )
 
-    $regItemProperty = Get-ItemProperty -Path $Path | `
-        Where-Object { $_.Name -eq $Name }
-    
-    if ($null -eq $regItemProperty) {
-        New-ItemProperty `
-                -Path $Path `
-                -Name $Name `
-                -Value 1 | `
-            Out-Null
-    } else {
-        Set-ItemProperty `
-                -Path $Path `
-                -Name $Name `
-                -Value 1 | `
-            Out-Null
+    if ((Get-OSPlatform) -eq "Windows") {
+        $regItemProperty = Get-ItemProperty -Path $Path | `
+            Where-Object { $_.Name -eq $Name }
+        
+        if ($null -eq $regItemProperty) {
+            New-ItemProperty `
+                    -Path $Path `
+                    -Name $Name `
+                    -Value 1 | `
+                Out-Null
+        } else {
+            Set-ItemProperty `
+                    -Path $Path `
+                    -Name $Name `
+                    -Value 1 | `
+                Out-Null
+        }
     }
 }
 
