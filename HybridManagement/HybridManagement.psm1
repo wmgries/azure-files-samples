@@ -68,6 +68,10 @@ $azurePrivateDnsIp = "168.63.129.16"
 $DnsForwarderTemplate = "https://raw.githubusercontent.com/wmgries/azure-files-samples/dfsn/dns-forwarder/azuredeploy.json"
 
 function Get-IsElevatedSession {
+    [CmdletBinding()]
+
+    param()
+
     switch((Get-OSPlatform)) {
         "Windows" {
             $currentPrincipal = [Security.Principal.WindowsPrincipal]::new(
@@ -93,6 +97,10 @@ function Get-IsElevatedSession {
 }
 
 function Test-IsElevatedSession {
+    [CmdletBinding()]
+
+    param()
+
     if (!(Get-IsElevatedSession)) {
         Write-Error `
             -Message "This cmdlet requires an elevated PowerShell session." `
@@ -101,6 +109,10 @@ function Test-IsElevatedSession {
 }
 
 function Get-OSPlatform {
+    [CmdletBinding()]
+
+    param()
+
     if ($PSVersionTable.PSEdition -eq "Desktop") {
         return "Windows"
     } else {
@@ -130,6 +142,10 @@ function Get-OSPlatform {
 }
 
 function Get-OSVersion {
+    [CmdletBinding()]
+
+    param()
+
     switch((Get-OSPlatform)) {
         "Windows" {
             return [System.Environment]::OSVersion.Version
@@ -150,6 +166,10 @@ function Get-OSVersion {
 }
 
 function Get-WindowsInstallationType {
+    [CmdletBinding()]
+
+    param()
+
     if ((Get-OSPlatform) -ne "Windows") {
         throw [System.PlatformNotSupportedException]::new("Get-WindowsInstallationType is only supported in Windows environments.")
     }
@@ -163,6 +183,10 @@ function Get-WindowsInstallationType {
 }
 
 function Get-OSFeature {
+    [CmdletBinding()]
+
+    param()
+    
     switch((Get-OSPlatform)) {
         "Windows" {
             $winVer = Get-OSVersion
@@ -242,12 +266,14 @@ function Get-OSFeature {
 }
 
 function Install-OSFeature {
+    [CmdletBinding()]
+    
     param(
         [Parameter(Mandatory=$true)]
         [string[]]$Name,
 
-        #[Parameter(Mandatory=$true, ParameterSetName="WindowsServer")]
-        #[switch]$WindowsServerFeature,
+        [Parameter(Mandatory=$true, ParameterSetName="WindowsServer")]
+        [switch]$WindowsServerFeature,
 
         [Parameter(Mandatory=$true, ParameterSetName="WindowsClientCapability")]
         [switch]$WindowsClientCapability,
@@ -323,7 +349,81 @@ function Install-OSFeature {
     }
 }
 
+function Test-OSFeature {
+    [CmdletBinding()]
+    
+    param(
+        [Parameter(Mandatory=$false)]
+        [string[]]$WindowsClientCapability,
+
+        [Parameter(Mandatory=$false)]
+        [string[]]$WindowsClientOptionalFeature,
+
+        [Parameter(Mandatory=$false)]
+        [string[]]$WindowsServerFeature
+    )
+
+    $features = Get-OSFeature
+
+    switch((Get-OSPlatform)) {
+        "Windows" {
+            switch((Get-WindowsInstallationType)) {
+                "Client" {
+                    $foundCapabilities = $features | `
+                        Where-Object { $_.FeatureKind -eq [OSFeatureKind]::WindowsClientCapability } | `
+                        Where-Object { $_.Name -in $WindowsClientCapability } 
+
+                    $notFoundCapabilities = $WindowsClientCapability | `
+                        Where-Object { $_ -notin ($foundCapabilities | Select-Object -ExpandProperty Name) }
+                    
+                    if ($null -eq $notFoundOptionalFeatures) {
+                        Install-OSFeature -Name $notFoundCapabilities -WindowsClientCapability
+                    }
+
+                    $foundOptionalFeatures = $features | `
+                        Where-Object { $_.FeatureKind -eq [OSFeatureKind]::WindowsClientOptionalFeature } | `
+                        Where-Object { $_.Name -in $WindowsClientOptionalFeature }
+
+                    $notFoundOptionalFeatures = $WindowsClientOptionalFeature | `
+                        Where-Object { $_ -notin ($foundOptionalFeatures | Select-Object -ExpandProperty Name ) }
+
+                    if ($null -eq $notFoundOptionalFeatures) {
+                        Install-OSFeature -Name $notFoundOptionalFeatures -WindowsClientOptionalFeature
+                    }
+                }
+
+                { ($_ -eq "Server") -or ($_ -eq "Server Core") } {
+                    $foundFeatures = $features | `
+                        Where-Object { $_.FeatureKind -eq [OSFeatureKind]::WindowsServerFeature } | `
+                        Where-Object { $_.Name -in $WindowsServerFeature }
+                    
+                    $notFoundFeatures = $features | `
+                        Where-Object { $_ -notin ($foundFeatures | Select-Object -ExpandProperty Name) }
+                    
+                    if ($null -eq $notFoundFeatures) {
+                        Install-OSFeature -Name $notFoundFeatures -WindowsServerFeature
+                    }
+                }
+            }
+        }
+
+        "Linux" {
+            throw [System.NotImplementedException]::new()
+        }
+
+        "OSX" {
+            throw [System.NotImplementedException]::new()
+        }
+
+        default {
+            throw [System.NotImplementedException]::new()
+        }
+    }
+}
+
 function Get-ADDomainInternal {
+    [CmdletBinding()]
+    
     param(
         [Parameter(Mandatory=$false, ValueFromPipeline=$true, Position=0)]
         [string]$Identity,
@@ -371,6 +471,8 @@ function Get-ADDomainInternal {
 }
 
 function Get-ADComputerInternal {
+    [CmdletBinding()]
+    
     param(
         [Parameter(Mandatory=$true, ParameterSetName="FilterParameterSet")]
         [string]$Filter,
@@ -423,6 +525,8 @@ function Get-ADComputerInternal {
 }
 
 function ConvertTo-EncodedJson {
+    [CmdletBinding()]
+    
     param(
         [string]$String,
         [int]$Depth = 2
@@ -439,6 +543,8 @@ function ConvertTo-EncodedJson {
 }
 
 function ConvertFrom-EncodedJson {
+    [CmdletBinding()]
+    
     param(
         [string]$String
     )
@@ -454,6 +560,8 @@ function ConvertFrom-EncodedJson {
 }
 
 function Write-OdjBlob {
+    [CmdletBinding()]
+    
     param(
         [Parameter(Mandatory=$true)]
         [string]$OdjBlob,
@@ -479,6 +587,8 @@ function Write-OdjBlob {
 }
 
 function Register-OfflineMachine {
+    [CmdletBinding()]
+    
     param(
         [Parameter(Mandatory=$true, ValueFromPipeline=$true)]
         [string]$MachineName,
@@ -632,6 +742,8 @@ function Register-OfflineMachine {
 }
 
 function Register-OfflineMachineWindows {
+    [CmdletBinding()]
+    
     param(
         [Parameter(Mandatory=$true, ValueFromPipeline=$true)]
         [string]$MachineName,
@@ -759,6 +871,8 @@ function Register-OfflineMachineWindows {
 }
 
 function Join-OfflineMachine {
+    [CmdletBinding()]
+    
     param(
         [Parameter(Mandatory=$true)]
         [string]$OdjBlob,
@@ -808,6 +922,8 @@ function Join-OfflineMachine {
 }
 
 function New-RegistryItem {
+    [CmdletBinding()]
+    
     param(
         [string]$ParentPath,
         [string]$Name
@@ -825,6 +941,8 @@ function New-RegistryItem {
 }
 
 function New-RegistryItemProperty {
+    [CmdletBinding()]
+
     param(
         [string]$Path,
         [string]$Name,
@@ -856,6 +974,8 @@ function Get-ADUserObjectPermissions {
 }
 
 function Resolve-DnsNameInternal {
+    [CmdletBinding()]
+    
     param(
         [Parameter(
             Mandatory=$true, 
@@ -887,6 +1007,8 @@ function Resolve-DnsNameInternal {
 }
 
 function Add-AzDnsForwardingRule {
+    [CmdletBinding()]
+    
     param(
         [Parameter(
             Mandatory=$true, 
@@ -994,6 +1116,8 @@ function Add-AzDnsForwardingRule {
 }
 
 function New-AzDnsForwardingRuleSet {
+    [CmdletBinding()]
+
     param(
         [Parameter(Mandatory=$false)]
         [ValidateSet(
@@ -1075,15 +1199,11 @@ function Clear-DnsClientCacheInternal {
 }
 
 function Push-AzDnsServerConfiguration {
+    [CmdletBinding()]
+
     param(
         [Parameter(Mandatory=$true)]
         [DnsForwardingRuleSet]$DnsForwardingRuleSet,
-
-        [Parameter(Mandatory=$false)]
-        [string[]]$ComputerName,
-
-        [Parameter(Mandatory=$false)]
-        [System.Management.Automation.PSCredential]$Credential,
 
         [Parameter(Mandatory=$false)]
         [ValidateSet(
@@ -1095,72 +1215,56 @@ function Push-AzDnsServerConfiguration {
 
     $sessionParameters = @{}
 
-    if ($PSBoundParameters.ContainsKey($ComputerName)) {
-        $sessionParameters += @{ "ComputerName" = $ComputerName }
-    }
+    $rules = $DnsForwardingRuleSet.DnsForwardingRules
+    foreach($rule in $rules) {
+        $zone = Get-DnsServerZone | `
+            Where-Object { $_.ZoneName -eq $zone.DomainName }
 
-    if ($PSBoundParameters.ContainsKey($Credential)) {
-        $sessionParameters += @{ "Credential" = $Credential }
-    }
+        $masterServers = $rule.MasterServers
+        if ($null -ne $rule) {
+            switch($ConflictBehavior) {
+                "Overwrite" {
+                    $zone | Remove-DnsServerZone `
+                            -Confirm:$false `
+                            -Force
+                }
 
-    $sessions = New-PSSession @sessionParameters
-    
-    $output = Invoke-Command `
-        -Session $sessions `
-        -ArgumentList $DnsForwardingRuleSet, $ConflictBehavior `
-        -ScriptBlock {
-            $DnsForwardingRuleSet = $args[0]
-            $ConflictBehavior = $args[1]
-
-            $rules = $DnsForwardingRuleSet.DnsForwardingRules
-            foreach($rule in $rules) {
-                $zone = Get-DnsServerZone | `
-                    Where-Object { $_.ZoneName -eq $zone.DomainName }
-
-                $masterServers = $rule.MasterServers
-                if ($null -ne $rule) {
-                    switch($ConflictBehavior) {
-                        "Overwrite" {
-                            $zone | Remove-DnsServerZone `
-                                    -Confirm:$false `
-                                    -Force
-                        }
-
-                        "Merge" {
-                            $existingMasterServers = $zone | `
-                                Select-Object -ExpandProperty MasterServers | `
-                                Select-Object -ExpandProperty IPAddressToString
-                            
-                            $masterServers = [System.Collections.Generic.HashSet[string]]::new(
-                                $masterServers)
-                            
-                            foreach($existingServer in $existingMasterServers) {
-                                $masterServers.Add($existingServer) | Out-Null
-                            }
-
-                            $zone | Remove-DnsServerZone `
-                                    -Confirm:$false `
-                                    -Force
-                        }
-
-                        "Disallow" {
-                            throw [System.ArgumentException]::new(
-                                "The DNS forwarding zone already exists", "DnsForwardingRuleSet")
-                        }
-
-                        default {
-                            throw [System.ArgumentException]::new(
-                                "Unexpected conflict behavior $ConflictBehavior", "ConflictBehavior")
-                        }
+                "Merge" {
+                    $existingMasterServers = $zone | `
+                        Select-Object -ExpandProperty MasterServers | `
+                        Select-Object -ExpandProperty IPAddressToString
+                    
+                    $masterServers = [System.Collections.Generic.HashSet[string]]::new(
+                        $masterServers)
+                    
+                    foreach($existingServer in $existingMasterServers) {
+                        $masterServers.Add($existingServer) | Out-Null
                     }
+
+                    $zone | Remove-DnsServerZone `
+                            -Confirm:$false `
+                            -Force
+                }
+
+                "Disallow" {
+                    throw [System.ArgumentException]::new(
+                        "The DNS forwarding zone already exists", "DnsForwardingRuleSet")
+                }
+
+                default {
+                    throw [System.ArgumentException]::new(
+                        "Unexpected conflict behavior $ConflictBehavior", "ConflictBehavior")
                 }
             }
         }
+    }
     
     return $output
 }
 
 function Push-OnPremDnsServerConfiguration {
+    [CmdletBinding()]
+
     param(
         [Parameter(Mandatory=$true)]
         [DnsForwardingRuleSet]$DnsForwardingRuleSet,
@@ -1258,6 +1362,8 @@ function Push-OnPremDnsServerConfiguration {
 }
 
 function New-AzDnsForwarder {
+    [CmdletBinding()]
+
     param(
         [string]$DnsServerResourceGroupName,
         [string]$VirtualNetworkResourceGroupName,
@@ -1440,19 +1546,3 @@ function New-AzDnsForwarder {
     
     Clear-DnsClientCacheInternal
 }
-
-Export-ModuleMember -Function `
-    "New-AzDnsForwarder",
-    "New-AzDnsForwardingRuleSet",
-    "Add-AzDnsForwardingRule",
-    "Register-OfflineMachine",
-    "Join-OfflineMachine",
-    "ConvertFrom-EncodedJson",
-    "ConvertTo-EncodedJson",
-    "New-RegistryItem",
-    "New-RegistryItemProperty",
-    "Push-AzDnsServerConfiguration",
-    "Push-OnPremDnsServerConfiguration",
-    "Get-ADComputerInternal",
-    "Install-OSFeature",
-    "Get-OSFeature"
