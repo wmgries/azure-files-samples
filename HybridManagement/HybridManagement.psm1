@@ -13,6 +13,8 @@ Add-Type -TypeDefinition @"
         }
     }
 
+    public class AzureLoginRequiredException : System.Exception { }
+
     public class DnsForwardingRule {
         public string DomainName { get; protected set; }
         public bool AzureResource { get; protected set; }
@@ -78,7 +80,7 @@ Add-Type -TypeDefinition @"
 $azurePrivateDnsIp = "168.63.129.16"
 $DnsForwarderTemplate = "https://raw.githubusercontent.com/wmgries/azure-files-samples/dfsn/dns-forwarder/azuredeploy.json"
 
-$sessionDictionary = [System.Collections.Generic.Dictionary[System.Tuple[string, string]]]::new()
+$sessionDictionary = [System.Collections.Generic.Dictionary[System.Tuple[string, string], System.Management.Automation.Runspaces.PSSession]]::new()
 function Initialize-RemoteSession {
     [CmdletBinding()]
     
@@ -1323,6 +1325,9 @@ function Add-AzDnsForwardingRule {
 
         if ($PSCmdlet.ParameterSetName -eq "AzureEndpointParameterSet") {
             $subscriptionContext = Get-AzContext
+            if ($null -eq $subscriptionContext) {
+                throw [AzureLoginRequiredException]::new()
+            }
             $environmentEndpoints = Get-AzEnvironment -Name $subscriptionContext.Environment
 
             switch($AzureEndpoint) {
@@ -1506,20 +1511,20 @@ function Push-AzDnsServerConfiguration {
 
         $rules = $DnsForwardingRuleSet.DnsForwardingRules
         foreach($rule in $rules) {
-            $zone = Get-DnsServerZone | `
-                Where-Object { $_.ZoneName -eq $zone.DomainName }
+            $existingZone = Get-DnsServerZone | `
+                Where-Object { $_.ZoneName -eq $rule.DomainName }
 
             $masterServers = $rule.MasterServers
-            if ($null -ne $rule) {
+            if ($null -ne $existingZone) {
                 switch($ConflictBehavior) {
                     "Overwrite" {
-                        $zone | Remove-DnsServerZone `
+                        $existingZone | Remove-DnsServerZone `
                                 -Confirm:$false `
                                 -Force
                     }
 
                     "Merge" {
-                        $existingMasterServers = $zone | `
+                        $existingMasterServers = $existingZone | `
                             Select-Object -ExpandProperty MasterServers | `
                             Select-Object -ExpandProperty IPAddressToString
                         
@@ -1530,7 +1535,7 @@ function Push-AzDnsServerConfiguration {
                             $masterServers.Add($existingServer) | Out-Null
                         }
 
-                        $zone | Remove-DnsServerZone `
+                        $existingZone | Remove-DnsServerZone `
                                 -Confirm:$false `
                                 -Force
                     }
@@ -1546,9 +1551,11 @@ function Push-AzDnsServerConfiguration {
                     }
                 }
             }
-        }
 
-        return $output
+            Add-DnsServerConditionalForwarderZone `
+                    -Name $rule.DomainName `
+                    -MasterServers $masterServers
+        }
     }
 }
 
