@@ -23,7 +23,7 @@ Join-WindowsMachine `
     -JoinOutputPath $djOutput
 
 $forwardingRules = ConvertFrom-EncodedJson -String $EncodedForwardingRules
-foreach($forwardRule in $forwardingRules) {
+foreach($forwardRule in $forwardingRules.DnsForwardingRules) {
     $zoneName = Get-DnsServerZone | `
         Where-Object { $_.ZoneName -eq $forwardRule.domainName }
     
