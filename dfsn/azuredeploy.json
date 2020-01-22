@@ -183,8 +183,8 @@
         "vmDiskType": "StandardSSD_LRS",
         "vmSize": "Standard_DS1_v2",
         "loadBalancerSku": "basic",
-        "sharedUtilitiesURL": "https://raw.githubusercontent.com/wmgries/azure-files-samples/dfsn/shared/AzureFilesArmUtilities.psm1",
-        "scriptURL": "https://raw.githubusercontent.com/wmgries/azure-files-samples/dfsn/dfsn/configureVM.ps1",
+        "sharedUtilitiesURL": "https://raw.githubusercontent.com/wmgries/azure-files-samples/HybridManagement/shared/AzureFilesArmUtilities.psm1",
+        "scriptURL": "https://raw.githubusercontent.com/wmgries/azure-files-samples/HybridManagement/dfsn/configureVM.ps1",
         "scriptName": "configureVM.ps1"
     },
     "resources": [

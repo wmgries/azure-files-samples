@@ -78,7 +78,7 @@ Add-Type -TypeDefinition @"
 "@
 
 $azurePrivateDnsIp = "168.63.129.16"
-$DnsForwarderTemplate = "https://raw.githubusercontent.com/wmgries/azure-files-samples/dfsn/dns-forwarder/azuredeploy.json"
+$DnsForwarderTemplate = "https://raw.githubusercontent.com/wmgries/azure-files-samples/HybridManagement/dns-forwarder/azuredeploy.json"
 
 function Resolve-PathRelative {
     [CmdletBinding()]
