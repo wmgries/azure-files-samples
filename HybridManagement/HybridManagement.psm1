@@ -761,18 +761,21 @@ function ConvertTo-EncodedJson {
     [CmdletBinding()]
     
     param(
-        [string]$String,
+        [Parameter(Mandatory=$true, ValueFromPipeline=$true)]
+        [object]$Object,
+
+        [Parameter(Mandatory=$false)]
         [int]$Depth = 2
     )
 
-    $String = ($String | ConvertTo-Json -Compress -Depth $Depth).
+    $Object = ($Object | ConvertTo-Json -Compress -Depth $Depth).
         Replace("`"", "*").
         Replace("[", "<").
         Replace("]", ">").
         Replace("{", "^").
         Replace("}", "%")
     
-    return $String
+    return $Object
 }
 
 function ConvertFrom-EncodedJson {
