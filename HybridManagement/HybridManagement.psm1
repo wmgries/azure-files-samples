@@ -80,6 +80,8 @@ Add-Type -TypeDefinition @"
 $azurePrivateDnsIp = "168.63.129.16"
 $DnsForwarderTemplate = "https://raw.githubusercontent.com/wmgries/azure-files-samples/dfsn/dns-forwarder/azuredeploy.json"
 
+$moduleFiles = "HybridManagement.psm1", "HybridManagement.psd1"
+
 $sessionDictionary = [System.Collections.Generic.Dictionary[System.Tuple[string, string], System.Management.Automation.Runspaces.PSSession]]::new()
 function Initialize-RemoteSession {
     [CmdletBinding()]
@@ -124,7 +126,7 @@ function Initialize-RemoteSession {
         }
     }
 
-    $lookupTuple = [System.Tuple]::new($ComputerName, $userName)
+    $lookupTuple = [System.Tuple[string, string]]::new($ComputerName, $userName)
     $foundSession = [System.Management.Automation.Runspaces.PSSession]$null
     if ($sessionDictionary.TryGetValue($lookupTuple, [ref]$foundSession)) {
         $Session = $foundSession
@@ -172,13 +174,32 @@ function Initialize-RemoteSession {
                         $InstallPath
                     }
                 }
-    
-                $moduleInfo = Get-Module -Name HybridManagement
-                Copy-Item `
-                    -Path $moduleInfo.ModuleBase `
-                    -Destination $InstallPath `
-                    -ToSession $session `
-                    -Recurse
+
+                $InstallPath = Invoke-Command `
+                    -Session $Session `
+                    -ArgumentList $InstallPath, $localModuleInfo.Version.ToString() `
+                    -ScriptBlock {
+                        $installPath = $args[0]
+                        $moduleVersion = $args[1]
+
+                        $path = "$installPath\HybridManagement\$moduleVersion"
+                        if (!(Test-Path -Path $path)) {
+                            New-Item `
+                                    -Path $path `
+                                    -ItemType Directory | `
+                                Out-Null
+                        }
+
+                        $path
+                    }
+
+                foreach($moduleFile in $moduleFiles) {
+                    $path = ([System.IO.Path]::Combine($localModuleInfo.ModuleBase, $moduleFile))
+                    Copy-Item `
+                        -Path $path `
+                        -Destination $InstallPath `
+                        -ToSession $session
+                }                 
             }
     
             default {
