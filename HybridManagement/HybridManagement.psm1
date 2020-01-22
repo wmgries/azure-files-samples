@@ -80,7 +80,131 @@ Add-Type -TypeDefinition @"
 $azurePrivateDnsIp = "168.63.129.16"
 $DnsForwarderTemplate = "https://raw.githubusercontent.com/wmgries/azure-files-samples/dfsn/dns-forwarder/azuredeploy.json"
 
-$moduleFiles = "HybridManagement.psm1", "HybridManagement.psd1"
+function Resolve-PathRelative {
+    [CmdletBinding()]
+
+    param(
+        [Parameter(
+            Mandatory=$true, 
+            Position=0)]
+        [string[]]$PathParts
+    )
+
+    return [System.IO.Path]::GetFullPath(
+        [System.IO.Path]::Combine($PathParts))
+}
+
+function Get-CurrentModule {
+    [CmdletBinding()]
+    param()
+
+    $ModuleInfo = Get-Module | Where-Object { $_.Path -eq $PSCommandPath }
+    if ($null -eq $moduleInfo) {
+        throw [System.IO.FileNotFoundException]::new(
+            "Could not find a loaded module with the indicated filename.", $PSCommandPath)
+    }
+
+    return $ModuleInfo
+}
+
+function Get-ModuleFiles {
+    [CmdletBinding()]
+
+    param(
+        [Parameter(Mandatory = $false, ValueFromPipeline=$true)]
+        [System.Management.Automation.PSModuleInfo]$ModuleInfo
+    )
+
+    process {
+        $moduleFiles = [System.Collections.Generic.HashSet[string]]::new()
+
+        if (!$PSBoundParameters.ContainsKey("ModuleInfo")) {
+            $ModuleInfo = Get-CurrentModule
+        }
+    
+        $manifestPath = Resolve-PathRelative `
+                -PathParts $ModuleInfo.ModuleBase, "$($moduleInfo.Name).psd1"
+        
+        if (!(Test-Path -Path $manifestPath)) {
+            throw [System.IO.FileNotFoundException]::new(
+                "Could not find a module manifest with the indicated filename", $manifestPath)
+        }
+        
+        try {
+            $manifest = Import-PowerShellDataFile -Path $manifestPath
+        } catch {
+            throw [System.IO.FileNotFoundException]::new(
+                "File matching name of manifest found, but does not contain module manifest.", $manifestPath)
+        }
+    
+        $moduleFiles.Add($manifestPath) | Out-Null
+        $moduleFiles.Add((Resolve-PathRelative `
+                -PathParts $ModuleInfo.ModuleBase, $manifest.RootModule)) | `
+            Out-Null
+        
+        if ($null -ne $manifest.NestedModules) {
+            foreach($nestedModule in $manifest.NestedModules) {
+                $moduleFiles.Add((Resolve-PathRelative `
+                        -PathParts $ModuleInfo.ModuleBase, $nestedModule)) | `
+                    Out-Null
+            }
+        }
+        
+        if ($null -ne $manifest.FormatsToProcess) {
+            foreach($format in $manifest.FormatsToProcess) {
+                $moduleFiles.Add((Resolve-PathRelative `
+                        -PathParts $ModuleInfo.ModuleBase, $format)) | `
+                    Out-Null
+            }
+        }
+    
+        if ($null -ne $manifest.RequiredAssemblies) {
+            foreach($assembly in $manifest.RequiredAssemblies) {
+                $moduleFiles.Add((Resolve-PathRelative `
+                        -PathParts $ModuleInfo.ModuleBase, $assembly)) | `
+                    Out-Null
+            }
+        }
+
+        return $moduleFiles
+    }
+}
+
+function Copy-RemoteModule {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [System.Management.Automation.Runspaces.PSSession]$Session
+    )
+
+    $moduleInfo = Get-CurrentModule
+    $remoteModulePath = Invoke-Command `
+            -Session $Session  `
+            -ArgumentList $moduleInfo.Name, $moduleInfo.Version.ToString() `
+            -ScriptBlock {
+                $moduleName = $args[0]
+                $moduleVersion = $args[1]
+
+                $psModPath = $env:PSModulePath.Split(";")[0]
+                if (!(Test-Path -Path $psModPath)) {
+                    New-Item -Path $psModPath -ItemType Directory | Out-Null
+                }
+
+                $modulePath = [System.IO.Path]::Combine(
+                    $psModPath, $moduleName, $moduleVersion)
+                if (!(Test-Path -Path $modulePath)) {
+                    New-Item -Path $modulePath -ItemType Directory | Out-Null
+                }
+
+                $modulePath
+            }
+
+    $moduleFiles = Get-ModuleFiles
+    Copy-Item `
+            -ToSession $Session `
+            -Path $moduleFiles `
+            -Destination $remoteModulePath
+}
 
 $sessionDictionary = [System.Collections.Generic.Dictionary[System.Tuple[string, string], System.Management.Automation.Runspaces.PSSession]]::new()
 function Initialize-RemoteSession {
@@ -93,16 +217,12 @@ function Initialize-RemoteSession {
         [Parameter(Mandatory=$true, ParameterSetName="Copy-ComputerName")]
         [string]$ComputerName,
 
-        [Parameter(Mandatory=$true, ParameterSetName="Copy-ComputerName")]
+        [Parameter(Mandatory=$false, ParameterSetName="Copy-ComputerName")]
         [System.Management.Automation.PSCredential]$Credential,
 
         [Parameter(Mandatory=$true, ParameterSetName="Copy-Session")]
         [Parameter(Mandatory=$true, ParameterSetName="Copy-ComputerName")]
-        [switch]$InstallViaCopy,
-
-        [Parameter(Mandatory=$false, ParameterSetName="Copy-Session")]
-        [Parameter(Mandatory=$false, ParameterSetName="Copy-ComputerName")]
-        [string]$InstallPath
+        [switch]$InstallViaCopy
     )
 
     $paramSplit = $PSCmdlet.ParameterSetName.Split("-")
@@ -110,166 +230,115 @@ function Initialize-RemoteSession {
     $SessionBehavior = $paramSplit[1]
 
     switch($SessionBehavior) {
-        "ComputerName" {
-            $userName = $Credential.UserName.ToLowerInvariant()
-        }
-
-        "Session" {
-            $ComputerName = $Session.ComputerName
-            $userName = Invoke-Command -Session $Session -ScriptBlock {
+        "Session" { 
+            $ComputerName = $session.ComputerName
+            $username = Invoke-Command -Session $Session -ScriptBlock {
                 $(whoami).ToLowerInvariant()
             }
         }
 
+        "ComputerName" {
+            $sessionParameters = @{ "ComputerName" = $ComputerName }
+            
+            if ($PSBoundParameters.ContainsKey("Credential")) {
+                $sessionParameters += @{ "Credential" = $Credential }
+                $username = $Credential.UserName
+            } else {
+                $username = $(whoami).ToLowerInvariant()
+            }
+
+            $Session = New-PSSession @sessionParameters
+        }
+
         default {
-            throw [System.NotImplementedException]::new()
+            throw [System.ArgumentException]::new(
+                "Unrecognized session parameter set.", "SessionBehavior")
         }
     }
+    
+    $lookupTuple = [System.Tuple[string, string]]::new($ComputerName, $username)
+    $existingSession = [System.Management.Automation.Runspaces.PSSession]$null
+    if ($sessionDictionary.TryGetValue($lookupTuple, [ref]$existingSession)) {
+        if ($existingSession.State -ne "Opened") {
+            $sessionDictionary.Remove($existingSession)
 
-    $lookupTuple = [System.Tuple[string, string]]::new($ComputerName, $userName)
-    $foundSession = [System.Management.Automation.Runspaces.PSSession]$null
-    if ($sessionDictionary.TryGetValue($lookupTuple, [ref]$foundSession)) {
-        $Session = $foundSession
-    } else {
-        switch ($SessionBehavior) {
-            "ComputerName" {
-                $Session = New-PSSession -ComputerName $ComputerName -Credential $Credential
-            }
-
-            "Session" { }
-
-            default {
-                throw [System.NotImplementedException]::new()
-            }
+            Remove-PSSession `
+                    -Session $existingSession `
+                    -WarningAction SilentlyContinue `
+                    -ErrorAction SilentlyContinue
+            
+            $sessionDictionary.Add($lookupTuple, $Session)
+        } else {
+            $Session = $existingSession
         }
-
+    } else {
         $sessionDictionary.Add($lookupTuple, $Session)
     }
 
-    $localModuleInfo = Get-Module -Name HybridManagement 
-    $remoteModuleInfo = Invoke-Command -Session $Session -ScriptBlock {
-        $moduleInfo = Get-Module -Name HybridManagement
-        if ($null -eq $moduleInfo) {
-            $moduleInfo = Get-Module -Name HybridManagement -ListAvailable
-        }
-
-        $moduleInfo
-    }
-
-    if ($null -ne $remoteModuleInfo) {
-        if ($localModuleInfo.Version -ne $remoteModuleInfo.Version) {
-            throw [PSSessionHybridManagementVersionMismatchException]::new(
-                $localModuleInfo.Version, $remoteModuleInfo.Version)
-        }
-    } else {
-        switch($ScriptCopyBehavior) {
-            "Copy" {
-                if ([string]::IsNullOrEmpty($InstallPath)) {
-                    $InstallPath = Invoke-Command -Session $Session -ScriptBlock {
-                        $InstallPath = $env:PSModulePath.Split(";")[0]
-                        if (!(Test-Path -Path $InstallPath)) {
-                            New-Item -Path $InstallPath -ItemType Directory | Out-Null
-                        }
+    $moduleInfo = Get-CurrentModule
+    $remoteModuleInfo = Get-Module `
+            -PSSession $Session `
+            -Name $moduleInfo.Name `
+            -ListAvailable
     
-                        $InstallPath
-                    }
-                }
-
-                $InstallPath = Invoke-Command `
-                    -Session $Session `
-                    -ArgumentList $InstallPath, $localModuleInfo.Version.ToString() `
-                    -ScriptBlock {
-                        $installPath = $args[0]
-                        $moduleVersion = $args[1]
-
-                        $path = "$installPath\HybridManagement\$moduleVersion"
-                        if (!(Test-Path -Path $path)) {
-                            New-Item `
-                                    -Path $path `
-                                    -ItemType Directory | `
-                                Out-Null
-                        }
-
-                        $path
-                    }
-
-                foreach($moduleFile in $moduleFiles) {
-                    $path = ([System.IO.Path]::Combine($localModuleInfo.ModuleBase, $moduleFile))
-                    Copy-Item `
-                        -Path $path `
-                        -Destination $InstallPath `
-                        -ToSession $session
-                }                 
-            }
-    
-            default {
-                throw [System.NotImplementedException]::new()
+    switch($ScriptCopyBehavior) {
+        "Copy" {
+            if ($null -eq $remoteModuleInfo) {
+                Copy-RemoteModule -Session $Session
+            } elseif ($moduleInfo.Version -ne $remoteModuleInfo.Version) {
+                throw [PSSessionHybridManagementVersionMismatchException]::new(
+                    $moduleInfo.Version, $remoteModuleInfo.Version)
             }
         }
-    }
-    
-    Invoke-Command -Session $Session -ScriptBlock {
-        Import-Module HybridManagement
+
+        default {
+            throw [System.ArgumentException]::new(
+                "Unrecognized session parameter set.", "ScriptCopyBehavior")
+        }
     }
 
-    return $Session
+    Invoke-Command `
+            -Session $Session `
+            -ArgumentList $moduleInfo.Name `
+            -ScriptBlock {
+                $moduleName = $args[0]
+                Import-Module -Name $moduleName
+            }
 }
 
 function Get-IsElevatedSession {
     [CmdletBinding()]
+    param()
 
-    param(
-        [Parameter(Mandatory=$false)]
-        [System.Management.Automation.Runspaces.PSSession]$Session
-    )
+    switch((Get-OSPlatform)) {
+        "Windows" {
+            $currentPrincipal = [Security.Principal.WindowsPrincipal]::new(
+                [Security.Principal.WindowsIdentity]::GetCurrent())
+            $isAdmin = $currentPrincipal.IsInRole(
+                [Security.Principal.WindowsBuiltInRole]::Administrator)
 
-    $parameters = @{ }
-    if ($PSBoundParameters.ContainsKey("Session")) {
-        Initialize-RemoteSession -Session $Session -InstallViaCopy
-        $parameters += @{ "Session" = $Session }
-    }
-
-    Invoke-Command @parameters -ScriptBlock {
-        switch((Get-OSPlatform)) {
-            "Windows" {
-                $currentPrincipal = [Security.Principal.WindowsPrincipal]::new(
-                    [Security.Principal.WindowsIdentity]::GetCurrent())
-                $isAdmin = $currentPrincipal.IsInRole(
-                    [Security.Principal.WindowsBuiltInRole]::Administrator)
-    
-                return $isAdmin
-            }
-    
-            "Linux" {
-                throw [System.PlatformNotSupportedException]::new()
-            }
-    
-            "OSX" {
-                throw [System.PlatformNotSupportedException]::new()
-            }
-    
-            default {
-                throw [System.PlatformNotSupportedException]::new()
-            }
+            return $isAdmin
         }
-    }    
+
+        "Linux" {
+            throw [System.PlatformNotSupportedException]::new()
+        }
+
+        "OSX" {
+            throw [System.PlatformNotSupportedException]::new()
+        }
+
+        default {
+            throw [System.PlatformNotSupportedException]::new()
+        }
+    }
 }
 
 function Test-IsElevatedSession {
     [CmdletBinding()]
+    param()
 
-    param(
-        [Parameter(Mandatory=$false)]
-        [System.Management.Automation.Runspaces.PSSession]$Session
-    )
-
-    $parameters = @{ }
-    if ($PSBoundParameters.ContainsKey("Session")) {
-        Initialize-RemoteSession -Session $Session -InstallViaCopy
-        $parameters += @{ "Session" = $Session }
-    }
-
-    if (!(Get-IsElevatedSession @parameters)) {
+    if (!(Get-IsElevatedSession)) {
         Write-Error `
             -Message "This cmdlet requires an elevated PowerShell session." `
             -ErrorAction Stop
@@ -278,203 +347,155 @@ function Test-IsElevatedSession {
 
 function Get-OSPlatform {
     [CmdletBinding()]
+    param()
 
-    param(
-        [Parameter(Mandatory=$false)]
-        [System.Management.Automation.Runspaces.PSSession]$Session
-    )
+    if ($PSVersionTable.PSEdition -eq "Desktop") {
+        return "Windows"
+    } else {
+        $windows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
+            [System.Runtime.InteropServices.OSPlatform]::Windows)
 
-    $parameters = @{ }
-    if ($PSBoundParameters.ContainsKey("Session")) {
-        Initialize-RemoteSession -Session $Session -InstallViaCopy
-        $parameters += $Session
-    }
-
-    Invoke-Command @parameters -ScriptBlock {
-        if ($PSVersionTable.PSEdition -eq "Desktop") {
+        if ($windows) { 
             return "Windows"
-        } else {
-            $windows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
-                [System.Runtime.InteropServices.OSPlatform]::Windows)
-    
-            if ($windows) { 
-                return "Windows"
-            }
-            
-            $linux = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
-                [System.Runtime.InteropServices.OSPlatform]::Linux)
-    
-            if ($linux) {
-                return "Linux"
-            }
-    
-            $osx = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
-                [System.Runtime.InteropServices.OSPlatform]::OSX)
-    
-            if ($osx) {
-                return "OSX"
-            }
-    
-            return "Unknown"
         }
+        
+        $linux = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
+            [System.Runtime.InteropServices.OSPlatform]::Linux)
+
+        if ($linux) {
+            return "Linux"
+        }
+
+        $osx = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
+            [System.Runtime.InteropServices.OSPlatform]::OSX)
+
+        if ($osx) {
+            return "OSX"
+        }
+
+        return "Unknown"
     }
 }
 
 function Get-OSVersion {
     [CmdletBinding()]
+    param()
 
-    param(
-        [Parameter(Mandatory=$false)]
-        [System.Management.Automation.Runspaces.PSSession]$Session
-    )
+    switch((Get-OSPlatform)) {
+        "Windows" {
+            return [System.Environment]::OSVersion.Version
+        }
 
-    $parameters = @{ }
-    if ($PSBoundParameters.ContainsKey("Session")) {
-        Initialize-RemoteSession -Session $Session -InstallViaCopy
-        $parameters += $Session
-    }
+        "Linux" {
+            throw [System.PlatformNotSupportedException]::new()
+        }
 
-    Invoke-Command @parameters -ScriptBlock {
-        switch((Get-OSPlatform)) {
-            "Windows" {
-                return [System.Environment]::OSVersion.Version
-            }
-    
-            "Linux" {
-                throw [System.PlatformNotSupportedException]::new()
-            }
-    
-            "OSX" {
-                throw [System.PlatformNotSupportedException]::new()
-            }
-    
-            default {
-                throw [System.PlatformNotSupportedException]::new()
-            }
+        "OSX" {
+            throw [System.PlatformNotSupportedException]::new()
+        }
+
+        default {
+            throw [System.PlatformNotSupportedException]::new()
         }
     }
 }
 
 function Get-WindowsInstallationType {
     [CmdletBinding()]
+    param()
 
-    param(
-        [Parameter(Mandatory=$false)]
-        [System.Management.Automation.Runspaces.PSSession]$Session
-    )
-
-    $parameters = @{ }
-    if ($PSBoundParameters.ContainsKey("Session")) {
-        Initialize-RemoteSession -Session $Session -InstallViaCopy
-        $parameters += $Session
+    if ((Get-OSPlatform) -ne "Windows") {
+        throw [System.PlatformNotSupportedException]::new("Get-WindowsInstallationType is only supported in Windows environments.")
     }
 
-    Invoke-Command @parameters -ScriptBlock {
-        if ((Get-OSPlatform) -ne "Windows") {
-            throw [System.PlatformNotSupportedException]::new("Get-WindowsInstallationType is only supported in Windows environments.")
-        }
+    $installType = Get-ItemProperty `
+            -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\" `
+            -Name InstallationType | `
+        Select-Object -ExpandProperty InstallationType
     
-        $installType = Get-ItemProperty `
-                -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\" `
-                -Name InstallationType | `
-            Select-Object -ExpandProperty InstallationType
-        
-        return $installType
-    }
+    return $installType
 }
 
 function Get-OSFeature {
     [CmdletBinding()]
+    param()
 
-    param(
-        [Parameter(Mandatory=$false)]
-        [System.Management.Automation.Runspaces.PSSession]$Session
-    )
+    switch((Get-OSPlatform)) {
+        "Windows" {
+            $winVer = Get-OSVersion
 
-    $parameters = @{ }
-    if ($PSBoundParameters.ContainsKey("Session")) {
-        Initialize-RemoteSession -Session $Session -InstallViaCopy
-        $parameters += $Session
-    }
+            switch((Get-WindowsInstallationType)) {
+                "Client" {
+                    Test-IsElevatedSession
 
-    Invoke-Command @parameters -ScriptBlock {
-        switch((Get-OSPlatform)) {
-            "Windows" {
-                $winVer = Get-OSVersion
-    
-                switch((Get-WindowsInstallationType)) {
-                    "Client" {
-                        Test-IsElevatedSession
-    
-                        $features = Get-WindowsCapability -Online | `
-                            Select-Object `
-                                @{ Name= "InternalName"; Expression = { $_.Name } },
-                                @{ Name = "Name"; Expression = { $_.Name.Split("~")[0] } },
-                                @{ Name = "Field1"; Expression = { $_.Name.Split("~")[1] } }, 
-                                @{ Name = "Field2"; Expression = { $_.Name.Split("~")[2] } },
-                                @{ Name = "Language"; Expression = { $_.Name.Split("~")[3] } },
-                                @{ Name = "Version"; Expression = { $_.Name.Split("~")[4] } },
-                                @{ Name = "Installed"; Expression = { $_.State -eq "Installed" } } | `
-                            ForEach-Object {
-                                if (![string]::IsNullOrEmpty($_.Language)) {
-                                    $Name = ($_.Name + "-" + $_.Language)
-                                } else {
-                                    $Name = $_.Name
-                                }
-    
-                                [OSFeature]::new(
-                                    $Name, 
-                                    $_.InternalName, 
-                                    $_.Version, 
-                                    $_.Installed, 
-                                    [OSFeatureKind]::WindowsClientCapability)
+                    $features = Get-WindowsCapability -Online | `
+                        Select-Object `
+                            @{ Name= "InternalName"; Expression = { $_.Name } },
+                            @{ Name = "Name"; Expression = { $_.Name.Split("~")[0] } },
+                            @{ Name = "Field1"; Expression = { $_.Name.Split("~")[1] } }, 
+                            @{ Name = "Field2"; Expression = { $_.Name.Split("~")[2] } },
+                            @{ Name = "Language"; Expression = { $_.Name.Split("~")[3] } },
+                            @{ Name = "Version"; Expression = { $_.Name.Split("~")[4] } },
+                            @{ Name = "Installed"; Expression = { $_.State -eq "Installed" } } | `
+                        ForEach-Object {
+                            if (![string]::IsNullOrEmpty($_.Language)) {
+                                $Name = ($_.Name + "-" + $_.Language)
+                            } else {
+                                $Name = $_.Name
                             }
-    
-                        $features += Get-WindowsOptionalFeature -Online | 
-                            Select-Object `
-                                @{ Name = "InternalName"; Expression = { $_.FeatureName } }, 
-                                @{ Name = "Name"; Expression = { $_.FeatureName } }, 
-                                @{ Name = "Installed"; Expression = { $_.State -eq "Enabled" } } | `
-                            ForEach-Object {
-                                [OSFeature]::new(
-                                    $_.Name, 
-                                    $_.InternalName, 
-                                    $winVer, 
-                                    $_.Installed, 
-                                    [OSFeatureKind]::WindowsClientOptionalFeature)
-                            }
-                    }
-    
-                    { ($_ -eq "Server") -or ($_ -eq "Server Core") } {
-                        $features = Get-WindowsFeature | `
-                            Select-Object Name, Installed | `
-                            ForEach-Object {
-                                [OSFeature]::new(
-                                    $_.Name, 
-                                    $_.Name, 
-                                    $winVer, 
-                                    $_.Installed, 
-                                    [OSFeatureKind]::WindowsServerFeature)
-                            }
-                    }
+
+                            [OSFeature]::new(
+                                $Name, 
+                                $_.InternalName, 
+                                $_.Version, 
+                                $_.Installed, 
+                                [OSFeatureKind]::WindowsClientCapability)
+                        }
+
+                    $features += Get-WindowsOptionalFeature -Online | 
+                        Select-Object `
+                            @{ Name = "InternalName"; Expression = { $_.FeatureName } }, 
+                            @{ Name = "Name"; Expression = { $_.FeatureName } }, 
+                            @{ Name = "Installed"; Expression = { $_.State -eq "Enabled" } } | `
+                        ForEach-Object {
+                            [OSFeature]::new(
+                                $_.Name, 
+                                $_.InternalName, 
+                                $winVer, 
+                                $_.Installed, 
+                                [OSFeatureKind]::WindowsClientOptionalFeature)
+                        }
+                }
+
+                { ($_ -eq "Server") -or ($_ -eq "Server Core") } {
+                    $features = Get-WindowsFeature | `
+                        Select-Object Name, Installed | `
+                        ForEach-Object {
+                            [OSFeature]::new(
+                                $_.Name, 
+                                $_.Name, 
+                                $winVer, 
+                                $_.Installed, 
+                                [OSFeatureKind]::WindowsServerFeature)
+                        }
                 }
             }
-    
-            "Linux" {
-                throw [System.NotImplementedException]::new()
-            }
-    
-            "OSX" {
-                throw [System.NotImplementedException]::new()
-            }
-    
-            default {
-                throw [System.NotImplementedException]::new()
-            }
         }
-    
-        return $features
+
+        "Linux" {
+            throw [System.NotImplementedException]::new()
+        }
+
+        "OSX" {
+            throw [System.NotImplementedException]::new()
+        }
+
+        default {
+            throw [System.NotImplementedException]::new()
+        }
     }
+
+    return $features
 }
 
 function Install-OSFeature {
@@ -491,95 +512,72 @@ function Install-OSFeature {
         [switch]$WindowsClientCapability,
 
         [Parameter(Mandatory=$true, ParameterSetName="WindowsClientOptionalFeature")]
-        [switch]$WindowsClientOptionalFeature,
-
-        [Parameter(Mandatory=$false)]
-        [System.Management.Automation.Runspaces.PSSession]$Session
+        [switch]$WindowsClientOptionalFeature
     )
 
-    $parameters = @{ }
-    if ($PSBoundParameters.ContainsKey("Session")) {
-        Initialize-RemoteSession -Session $Session -InstallViaCopy
-        $parameters += $Session
-    }
+    switch ((Get-OSPlatform)) {
+        "Windows" {
+            switch((Get-WindowsInstallationType)) {
+                "Client" {
+                    Test-IsElevatedSession
 
-    $parameters += @{ 
-        "ArgumentList" = $Name, 
-            $WindowsServerFeature, 
-            $WindowsClientCapability, 
-            $WindowsClientOptionalFeature 
-    }
-
-    Invoke-Command @parameters -ScriptBlock {
-        $Name = $args[0]
-        $WindowsServerFeature = $args[1]
-        $WindowsClientCapability = $args[2]
-        $WindowsClientOptionalFeature = $args[3]
-
-        switch ((Get-OSPlatform)) {
-            "Windows" {
-                switch((Get-WindowsInstallationType)) {
-                    "Client" {
-                        Test-IsElevatedSession
-    
-                        if ($WindowsClientCapability) {
-                            $foundMatches = $Name | `
-                                ForEach-Object { Get-WindowsCapability -Online -Name "$_*" } | `
-                                Select-Object Name, @{ Name = "FriendlyName"; Expression = { $_.Name.Split("~")[0] } }, State
-                            
-                            $notFoundMatches = $Name | `
-                                Where-Object { $_ -notin ($foundMatches | Select-Object -ExpandProperty FriendlyName) }
-                            
-                            if ($null -ne $notFoundMatches) {
-                                $sb = [System.Text.StringBuilder]::new()
-                                $sb.Append("Could not find the following required modules: ") | Out-Null
-                                for($i = 0; $i -lt $notFoundMatches.Length; $i++) {
-                                    if ($i -gt 0) {
-                                        $sb.Append(", ") | Out-Null
-                                    }
-    
-                                    $sb.Append($notFoundMatches[$i]) | Out-Null
+                    if ($WindowsClientCapability) {
+                        $foundMatches = $Name | `
+                            ForEach-Object { Get-WindowsCapability -Online -Name "$_*" } | `
+                            Select-Object Name, @{ Name = "FriendlyName"; Expression = { $_.Name.Split("~")[0] } }, State
+                        
+                        $notFoundMatches = $Name | `
+                            Where-Object { $_ -notin ($foundMatches | Select-Object -ExpandProperty FriendlyName) }
+                        
+                        if ($null -ne $notFoundMatches) {
+                            $sb = [System.Text.StringBuilder]::new()
+                            $sb.Append("Could not find the following required modules: ") | Out-Null
+                            for($i = 0; $i -lt $notFoundMatches.Length; $i++) {
+                                if ($i -gt 0) {
+                                    $sb.Append(", ") | Out-Null
                                 }
-    
-                                $sb.Append(". You may need to install an external package, such as the RSAT package prior to Windows 10 version 1809. RSAT can be downloaded via https://www.microsoft.com/download/details.aspx?id=45520.") | Out-Null
-    
-                                Write-Error -Message $sb.ToString() -ErrorAction Stop
+
+                                $sb.Append($notFoundMatches[$i]) | Out-Null
                             }
-    
-                            $foundMatches | `
-                                Where-Object { $_.State -eq "NotPresent" } | `
-                                Add-WindowsCapability -Online | `
-                                Out-Null
+
+                            $sb.Append(". You may need to install an external package, such as the RSAT package prior to Windows 10 version 1809. RSAT can be downloaded via https://www.microsoft.com/download/details.aspx?id=45520.") | Out-Null
+
+                            Write-Error -Message $sb.ToString() -ErrorAction Stop
                         }
-    
-                        if ($WindowsClientOptionalFeature) {
-                            Enable-WindowsOptionalFeature -Online -FeatureName $Name | `
-                                Out-Null
-                        }
-                    }
-            
-                    { ($_ -eq "Server") -or ($_ -eq "Server Core") } {
-                        Install-WindowsFeature -Name $Name | `
+
+                        $foundMatches | `
+                            Where-Object { $_.State -eq "NotPresent" } | `
+                            Add-WindowsCapability -Online | `
                             Out-Null
                     }
-            
-                    default {
-                        Write-Error -Message "Unknown Windows installation type $_" -ErrorAction Stop
+
+                    if ($WindowsClientOptionalFeature) {
+                        Enable-WindowsOptionalFeature -Online -FeatureName $Name | `
+                            Out-Null
                     }
                 }
+        
+                { ($_ -eq "Server") -or ($_ -eq "Server Core") } {
+                    Install-WindowsFeature -Name $Name | `
+                        Out-Null
+                }
+        
+                default {
+                    Write-Error -Message "Unknown Windows installation type $_" -ErrorAction Stop
+                }
             }
-    
-            "Linux" {
-                throw [System.PlatformNotSupportedException]::new()
-            }
-    
-            "OSX" {
-                throw [System.PlatformNotSupportedException]::new()
-            }
-    
-            default {
-                throw [System.PlatformNotSupportedException]::new()
-            }
+        }
+
+        "Linux" {
+            throw [System.PlatformNotSupportedException]::new()
+        }
+
+        "OSX" {
+            throw [System.PlatformNotSupportedException]::new()
+        }
+
+        default {
+            throw [System.PlatformNotSupportedException]::new()
         }
     }
 }
@@ -595,84 +593,63 @@ function Test-OSFeature {
         [string[]]$WindowsClientOptionalFeature,
 
         [Parameter(Mandatory=$false)]
-        [string[]]$WindowsServerFeature,
-
-        [Parameter(Mandatory=$false)]
-        [System.Management.Automation.Runspaces.PSSession]$Session
+        [string[]]$WindowsServerFeature
     )
 
-    $parameters = @{ }
-    if ($PSBoundParameters.ContainsKey("Session")) {
-        Initialize-RemoteSession -Session $Session -InstallViaCopy
-        $parameters += $Session
-    }
+    $features = Get-OSFeature
 
-    $parameters += @{ 
-        "ArgumentList" = $WindowsClientCapability, 
-            $WindowsClientOptionalFeature,
-            $WindowsServerFeature 
-    }
+    switch((Get-OSPlatform)) {
+        "Windows" {
+            switch((Get-WindowsInstallationType)) {
+                "Client" {
+                    $foundCapabilities = $features | `
+                        Where-Object { $_.FeatureKind -eq [OSFeatureKind]::WindowsClientCapability } | `
+                        Where-Object { $_.Name -in $WindowsClientCapability } 
 
-    Invoke-Command @parameters -ScriptBlock {
-        $WindowsClientCapability = $args[0]
-        $WindowsClientOptionalFeature = $args[1]
-        $WindowsServerFeature = $args[2]
-
-        $features = Get-OSFeature
-
-        switch((Get-OSPlatform)) {
-            "Windows" {
-                switch((Get-WindowsInstallationType)) {
-                    "Client" {
-                        $foundCapabilities = $features | `
-                            Where-Object { $_.FeatureKind -eq [OSFeatureKind]::WindowsClientCapability } | `
-                            Where-Object { $_.Name -in $WindowsClientCapability } 
-
-                        $notFoundCapabilities = $WindowsClientCapability | `
-                            Where-Object { $_ -notin ($foundCapabilities | Select-Object -ExpandProperty Name) }
-                        
-                        if ($null -eq $notFoundOptionalFeatures) {
-                            Install-OSFeature -Name $notFoundCapabilities -WindowsClientCapability
-                        }
-
-                        $foundOptionalFeatures = $features | `
-                            Where-Object { $_.FeatureKind -eq [OSFeatureKind]::WindowsClientOptionalFeature } | `
-                            Where-Object { $_.Name -in $WindowsClientOptionalFeature }
-
-                        $notFoundOptionalFeatures = $WindowsClientOptionalFeature | `
-                            Where-Object { $_ -notin ($foundOptionalFeatures | Select-Object -ExpandProperty Name ) }
-
-                        if ($null -eq $notFoundOptionalFeatures) {
-                            Install-OSFeature -Name $notFoundOptionalFeatures -WindowsClientOptionalFeature
-                        }
+                    $notFoundCapabilities = $WindowsClientCapability | `
+                        Where-Object { $_ -notin ($foundCapabilities | Select-Object -ExpandProperty Name) }
+                    
+                    if ($null -eq $notFoundOptionalFeatures) {
+                        Install-OSFeature -Name $notFoundCapabilities -WindowsClientCapability
                     }
 
-                    { ($_ -eq "Server") -or ($_ -eq "Server Core") } {
-                        $foundFeatures = $features | `
-                            Where-Object { $_.FeatureKind -eq [OSFeatureKind]::WindowsServerFeature } | `
-                            Where-Object { $_.Name -in $WindowsServerFeature }
-                        
-                        $notFoundFeatures = $features | `
-                            Where-Object { $_ -notin ($foundFeatures | Select-Object -ExpandProperty Name) }
-                        
-                        if ($null -eq $notFoundFeatures) {
-                            Install-OSFeature -Name $notFoundFeatures -WindowsServerFeature
-                        }
+                    $foundOptionalFeatures = $features | `
+                        Where-Object { $_.FeatureKind -eq [OSFeatureKind]::WindowsClientOptionalFeature } | `
+                        Where-Object { $_.Name -in $WindowsClientOptionalFeature }
+
+                    $notFoundOptionalFeatures = $WindowsClientOptionalFeature | `
+                        Where-Object { $_ -notin ($foundOptionalFeatures | Select-Object -ExpandProperty Name ) }
+
+                    if ($null -eq $notFoundOptionalFeatures) {
+                        Install-OSFeature -Name $notFoundOptionalFeatures -WindowsClientOptionalFeature
+                    }
+                }
+
+                { ($_ -eq "Server") -or ($_ -eq "Server Core") } {
+                    $foundFeatures = $features | `
+                        Where-Object { $_.FeatureKind -eq [OSFeatureKind]::WindowsServerFeature } | `
+                        Where-Object { $_.Name -in $WindowsServerFeature }
+                    
+                    $notFoundFeatures = $features | `
+                        Where-Object { $_ -notin ($foundFeatures | Select-Object -ExpandProperty Name) }
+                    
+                    if ($null -eq $notFoundFeatures) {
+                        Install-OSFeature -Name $notFoundFeatures -WindowsServerFeature
                     }
                 }
             }
+        }
 
-            "Linux" {
-                throw [System.NotImplementedException]::new()
-            }
+        "Linux" {
+            throw [System.NotImplementedException]::new()
+        }
 
-            "OSX" {
-                throw [System.NotImplementedException]::new()
-            }
+        "OSX" {
+            throw [System.NotImplementedException]::new()
+        }
 
-            default {
-                throw [System.NotImplementedException]::new()
-            }
+        default {
+            throw [System.NotImplementedException]::new()
         }
     }
 }
@@ -1185,32 +1162,19 @@ function New-RegistryItem {
         [string]$ParentPath,
 
         [Parameter(Mandatory=$true)]
-        [string]$Name,
-
-        [Parameter(Mandatory=$false)]
-        [System.Management.Automation.Runspaces.PSSession]$Session
+        [string]$Name
     )
 
-    $parameters = @{ }
-    if ($PSBoundParameters.ContainsKey("Session")) {
-        Initialize-RemoteSession -Session $Session -InstallViaCopy
-        $parameters += $Session
-    }
+    $ParentPath = $args[0]
+    $Name = $args[1]
 
-    $parameters += @{ "ArgumentList" = $ParentPath, $Name }
-
-    Invoke-Command @parameters -ScriptBlock {
-        $ParentPath = $args[0]
-        $Name = $args[1]
-
-        if ((Get-OSPlatform) -eq "Windows") {
-            $regItem = Get-ChildItem -Path $ParentPath | `
-                Where-Object { $_.PSChildName -eq $Name }
-            
-            if ($null -eq $regItem) {
-                New-Item -Path ($ParentPath + "\" + $Name) | `
-                    Out-Null
-            }
+    if ((Get-OSPlatform) -eq "Windows") {
+        $regItem = Get-ChildItem -Path $ParentPath | `
+            Where-Object { $_.PSChildName -eq $Name }
+        
+        if ($null -eq $regItem) {
+            New-Item -Path ($ParentPath + "\" + $Name) | `
+                Out-Null
         }
     }
 }
@@ -1226,44 +1190,27 @@ function New-RegistryItemProperty {
         [string]$Name,
 
         [Parameter(Mandatory=$true)]
-        [string]$Value,
-
-        [Parameter(Mandatory=$false)]
-        [System.Management.Automation.Runspaces.PSSession]$Session
+        [string]$Value
     )
 
-    $parameters = @{ }
-    if ($PSBoundParameters.ContainsKey("Session")) {
-        Initialize-RemoteSession -Session $Session -InstallViaCopy
-        $parameters += $Session
-    }
-
-    $parameters += @{ "ArgumentList" = $Path, $Name, $Value }
-
-    Invoke-Command @parameters -ScriptBlock {
-        $Path = $args[0]
-        $Name = $args[1]
-        $Value = $args[2]
-
-        if ((Get-OSPlatform) -eq "Windows") {
-            $regItemProperty = Get-ItemProperty -Path $Path | `
-                Where-Object { $_.Name -eq $Name }
-            
-            if ($null -eq $regItemProperty) {
-                New-ItemProperty `
-                        -Path $Path `
-                        -Name $Name `
-                        -Value $Value | `
-                    Out-Null
-            } else {
-                Set-ItemProperty `
-                        -Path $Path `
-                        -Name $Name `
-                        -Value $Value | `
-                    Out-Null
-            }
+    if ((Get-OSPlatform) -eq "Windows") {
+        $regItemProperty = Get-ItemProperty -Path $Path | `
+            Where-Object { $_.Name -eq $Name }
+        
+        if ($null -eq $regItemProperty) {
+            New-ItemProperty `
+                    -Path $Path `
+                    -Name $Name `
+                    -Value $Value | `
+                Out-Null
+        } else {
+            Set-ItemProperty `
+                    -Path $Path `
+                    -Name $Name `
+                    -Value $Value | `
+                Out-Null
         }
-    }    
+    }  
 }
 
 function Get-ADUserObjectPermissions {
@@ -1510,73 +1457,60 @@ function Push-AzDnsServerConfiguration {
             "Overwrite", 
             "Merge", 
             "Disallow")]
-        [string]$ConflictBehavior = "Overwrite",
-
-        [Parameter(Mandatory=$false)]
-        [System.Management.Automation.Runspaces.PSSession]$Session
+        [string]$ConflictBehavior = "Overwrite"
     )
 
-    $parameters = @{ }
-    if ($PSBoundParameters.ContainsKey("Session")) {
-        Initialize-RemoteSession -Session $Session -InstallViaCopy
-        $parameters += $Session
-    }
+    $DnsForwardingRuleSet = $args[0]
+    $ConflictBehavior = $args[1]
 
-    $parameters += @{ "ArgumentList" = $DnsForwardingRuleSet, $ConflictBehavior }
+    Test-OSFeature -WindowsServerFeature "DNS", "RSAT-DNS-Server"
 
-    Invoke-Command @parameters -ScriptBlock {
-        $DnsForwardingRuleSet = $args[0]
-        $ConflictBehavior = $args[1]
+    $rules = $DnsForwardingRuleSet.DnsForwardingRules
+    foreach($rule in $rules) {
+        $existingZone = Get-DnsServerZone | `
+            Where-Object { $_.ZoneName -eq $rule.DomainName }
 
-        Test-OSFeature -WindowsServerFeature "DNS", "RSAT-DNS-Server"
+        $masterServers = $rule.MasterServers
+        if ($null -ne $existingZone) {
+            switch($ConflictBehavior) {
+                "Overwrite" {
+                    $existingZone | Remove-DnsServerZone `
+                            -Confirm:$false `
+                            -Force
+                }
 
-        $rules = $DnsForwardingRuleSet.DnsForwardingRules
-        foreach($rule in $rules) {
-            $existingZone = Get-DnsServerZone | `
-                Where-Object { $_.ZoneName -eq $rule.DomainName }
-
-            $masterServers = $rule.MasterServers
-            if ($null -ne $existingZone) {
-                switch($ConflictBehavior) {
-                    "Overwrite" {
-                        $existingZone | Remove-DnsServerZone `
-                                -Confirm:$false `
-                                -Force
+                "Merge" {
+                    $existingMasterServers = $existingZone | `
+                        Select-Object -ExpandProperty MasterServers | `
+                        Select-Object -ExpandProperty IPAddressToString
+                    
+                    $masterServers = [System.Collections.Generic.HashSet[string]]::new(
+                        $masterServers)
+                    
+                    foreach($existingServer in $existingMasterServers) {
+                        $masterServers.Add($existingServer) | Out-Null
                     }
 
-                    "Merge" {
-                        $existingMasterServers = $existingZone | `
-                            Select-Object -ExpandProperty MasterServers | `
-                            Select-Object -ExpandProperty IPAddressToString
-                        
-                        $masterServers = [System.Collections.Generic.HashSet[string]]::new(
-                            $masterServers)
-                        
-                        foreach($existingServer in $existingMasterServers) {
-                            $masterServers.Add($existingServer) | Out-Null
-                        }
+                    $existingZone | Remove-DnsServerZone `
+                            -Confirm:$false `
+                            -Force
+                }
 
-                        $existingZone | Remove-DnsServerZone `
-                                -Confirm:$false `
-                                -Force
-                    }
+                "Disallow" {
+                    throw [System.ArgumentException]::new(
+                        "The DNS forwarding zone already exists", "DnsForwardingRuleSet")
+                }
 
-                    "Disallow" {
-                        throw [System.ArgumentException]::new(
-                            "The DNS forwarding zone already exists", "DnsForwardingRuleSet")
-                    }
-
-                    default {
-                        throw [System.ArgumentException]::new(
-                            "Unexpected conflict behavior $ConflictBehavior", "ConflictBehavior")
-                    }
+                default {
+                    throw [System.ArgumentException]::new(
+                        "Unexpected conflict behavior $ConflictBehavior", "ConflictBehavior")
                 }
             }
-
-            Add-DnsServerConditionalForwarderZone `
-                    -Name $rule.DomainName `
-                    -MasterServers $masterServers
         }
+
+        Add-DnsServerConditionalForwarderZone `
+                -Name $rule.DomainName `
+                -MasterServers $masterServers
     }
 }
 
@@ -1595,84 +1529,67 @@ function Push-OnPremDnsServerConfiguration {
             "Overwrite", 
             "Merge", 
             "Disallow")]
-        [string]$ConflictBehavior = "Overwrite",
-
-        [Parameter(Mandatory=$false)]
-        [System.Management.Automation.Runspaces.PSSession]$Session
+        [string]$ConflictBehavior = "Overwrite"
     )
-    
-    $parameters = @{ }
-    if ($PSBoundParameters.ContainsKey("Session")) {
-        Initialize-RemoteSession -Session $Session -InstallViaCopy
-        $parameters += $Session
-    }
 
-    $parameters += @{ 
-        "ArgumentList" = $DnsForwardingRuleSet, 
-            $AzDnsForwarderIpAddress, 
-            $ConflictBehavior 
-    }
+    $DnsForwardingRuleSet = $args[0]
+    $AzDnsForwarderIpAddress = $args[1]
+    $ConflictBehavior = $args[2]
 
-    Invoke-Command @parameters -ScriptBlock {
-        $DnsForwardingRuleSet = $args[0]
-        $AzDnsForwarderIpAddress = $args[1]
-        $ConflictBehavior = $args[2]
+    $onPremRules = $DnsForwardingRuleSet | `
+        Select-Object -ExpandProperty DnsForwardingRules | `
+        Where-Object { !$_.AzureResource }
 
-        $onPremRules = $DnsForwardingRuleSet | `
-            Select-Object -ExpandProperty DnsForwardingRules | `
-            Where-Object { !$_.AzureResource }
+    foreach($rule in $onPremRules) {
+        $zone = Get-DnsServerZone | `
+            Where-Object { $_.ZoneName -eq $rule.DomainName }
 
-        foreach($rule in $onPremRules) {
-            $zone = Get-DnsServerZone | `
-                Where-Object { $_.ZoneName -eq $rule.DomainName }
+        $masterServers = $AzDnsForwarderIpAddress
+        if ($null -ne $zone) {
+            switch($ConflictBehavior) {
+                "Overwrite" {
+                    $zone | Remove-DnsServerZone `
+                            -Confirm:$false `
+                            -Force
+                }
 
-            $masterServers = $AzDnsForwarderIpAddress
-            if ($null -ne $zone) {
-                switch($ConflictBehavior) {
-                    "Overwrite" {
-                        $zone | Remove-DnsServerZone `
-                                -Confirm:$false `
-                                -Force
+                "Merge" {
+                    $existingMasterServers = $zone | `
+                        Select-Object -ExpandProperty MasterServers | `
+                        Select-Object -ExpandProperty IPAddressToString
+                    
+                    $masterServers = [System.Collections.Generic.HashSet[string]]::new(
+                        $AzDnsForwarderIpAddress)
+
+                    foreach($existingServer in $existingMasterServers) {
+                        $masterServers.Add($existingServer) | Out-Null
                     }
+                    
+                    $zone | Remove-DnsServerZone `
+                            -Confirm:$false `
+                            -Force
+                }
 
-                    "Merge" {
-                        $existingMasterServers = $zone | `
-                            Select-Object -ExpandProperty MasterServers | `
-                            Select-Object -ExpandProperty IPAddressToString
-                        
-                        $masterServers = [System.Collections.Generic.HashSet[string]]::new(
-                            $AzDnsForwarderIpAddress)
+                "Disallow" {
+                    throw [System.ArgumentException]::new(
+                        "The DNS forwarding zone already exists", "DnsForwardingRuleSet")
+                }
 
-                        foreach($existingServer in $existingMasterServers) {
-                            $masterServers.Add($existingServer) | Out-Null
-                        }
-                        
-                        $zone | Remove-DnsServerZone `
-                                -Confirm:$false `
-                                -Force
-                    }
-
-                    "Disallow" {
-                        throw [System.ArgumentException]::new(
-                            "The DNS forwarding zone already exists", "DnsForwardingRuleSet")
-                    }
-
-                    default {
-                        throw [System.ArgumentException]::new(
-                            "Unexpected conflict behavior $ConflictBehavior", "ConflictBehavior")
-                    }
+                default {
+                    throw [System.ArgumentException]::new(
+                        "Unexpected conflict behavior $ConflictBehavior", "ConflictBehavior")
                 }
             }
-            
-            Add-DnsServerConditionalForwarderZone `
-                    -Name $rule.DomainName `
-                    -MasterServers $masterServers
-            
-            Clear-DnsClientCache
-            Clear-DnsServerCache `
-                    -Confirm:$false `
-                    -Force
         }
+        
+        Add-DnsServerConditionalForwarderZone `
+                -Name $rule.DomainName `
+                -MasterServers $masterServers
+        
+        Clear-DnsClientCache
+        Clear-DnsServerCache `
+                -Confirm:$false `
+                -Force
     }
 }
 
@@ -1680,9 +1597,16 @@ function New-AzDnsForwarder {
     [CmdletBinding()]
 
     param(
+        [Parameter(Mandatory=$true)]
         [string]$DnsServerResourceGroupName,
+
+        [Parameter(Mandatory=$true)]
         [string]$VirtualNetworkResourceGroupName,
+
+        [Parameter(Mandatory=$true)]
         [string]$VirtualNetworkName,
+
+        [Parameter(Mandatory=$true)]
         [string]$VirtualNetworkSubnetName,
         
         [Parameter(Mandatory=$false)]
@@ -1717,7 +1641,9 @@ function New-AzDnsForwarder {
         Where-Object { $_.Name -eq $virtualNetworkName }
 
     if ($null -eq $virtualNetwork) {
-        Write-Error -Message "Virtual network $virtualNetworkName does not exist in resource group $virtualNetworkResourceGroupName."
+        Write-Error `
+                -Message "Virtual network $virtualNetworkName does not exist in resource group $virtualNetworkResourceGroupName." `
+                -ErrorAction Stop
     }
 
     # Verify virtual network's subnet. 
@@ -1726,7 +1652,9 @@ function New-AzDnsForwarder {
         Where-Object { $_.Name -eq $virtualNetworkSubnetName } 
 
     if ($null -eq $virtualNetworkSubnet) {
-        Write-Error -Message "Subnet $virtualNetworkSubnetName does not exist in virtual network $virtualNetworkName."
+        Write-Error `
+                -Message "Subnet $virtualNetworkSubnetName does not exist in virtual network $virtualNetworkName." `
+                -ErrorAction Stop
     }
 
     # Create resource group for the DNS forwarders, if it hasn't already
@@ -1859,11 +1787,27 @@ function New-AzDnsForwarder {
                 -Credential $Credential `
                 -InstallViaCopy
         
-        Push-OnPremDnsServerConfiguration `
-                -DnsForwardingRuleSet $DnsForwardingRuleSet `
-                -AzDnsForwarderIpAddress $dnsForwarder0PrivateIp, $dnsForwarder0PrivateIp `
-                -Session $session
+        Invoke-Command `
+                -Session $session `
+                -ArgumentList $DnsForwardingRuleSet, $dnsForwarder0PrivateIp, $dnsForwarder1PrivateIp `
+                -ScriptBlock {
+                    $DnsForwardingRuleSet = $args[0]
+                    $dnsForwarder0PrivateIp = $args[1]
+                    $dnsForwarder1PrivateIp = $args[2]
+
+                    Push-OnPremDnsServerConfiguration `
+                            -DnsForwardingRuleSet $DnsForwardingRuleSet `
+                            -AzDnsForwarderIpAddress $dnsForwarder0PrivateIp, $dnsForwarder1PrivateIp 
+                }
     }    
     
     Clear-DnsClientCacheInternal
+}
+
+function Mount-AzFileShare {
+
+}
+
+function Dismount-AzFileShare {
+
 }
