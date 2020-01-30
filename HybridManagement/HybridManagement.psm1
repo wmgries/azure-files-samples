@@ -1,81 +1,245 @@
-# Module constants
-Add-Type -TypeDefinition @"
-    public class PSSessionElevationRequiredException : System.Exception { }
+using namespace System
+using namespace System.Collections
+using namespace System.Collections.Generic
+using namespace System.Management.Automation
 
-    public class PSSessionHybridManagementVersionMismatchException : System.Exception {
-        public System.Version LocalVersion { get; protected set; }
-        public System.Version RemoteVersion { get; protected set; }
+class PSSessionElevationRequiredException : Exception { }
 
-        public PSSessionHybridManagementVersionMismatchException(
-            System.Version localVersion, System.Version remoteVersion) {
-                LocalVersion = localVersion;
-                RemoteVersion = remoteVersion;
+class PSSessionHybridManagementVersionMismatchException : Exception {
+    [Version]$LocalVersion
+    [Version]$RemoteVersion
+
+    PSSessionHybridManagementVersionMismatchException(
+        [Version]$localVersion, 
+        [Version]$remoteVersion
+    ) {
+        $this.LocalVersion = $localVersion
+        $this.RemoteVersion = $remoteVersion
+    }
+}
+
+class AzureLoginRequiredException : Exception { }
+
+class DnsForwardingRule {
+    [string]$DomainName
+    [bool]$AzureResource
+    [ISet[string]]$MasterServers
+
+    hidden Init(
+        [string]$domainName, 
+        [bool]$azureResource, 
+        [ISet[string]]$masterServers
+    ) {
+        $this.DomainName = $domainName
+        $this.AzureResource = $azureResource
+        $this.MasterServers = $masterServers
+    }
+
+    hidden Init(
+        [string]$domainName,
+        [bool]$azureResource,
+        [IEnumerable[string]]$masterServers 
+    ) {
+        $this.DomainName = $domainName
+        $this.AzureResource = $azureResource
+        $this.MasterServers = [HashSet[string]]::new($masterServers)
+    }
+
+    hidden Init(
+        [string]$domainName,
+        [bool]$azureResource,
+        [IEnumerable]$masterServers
+    ) {
+        $this.DomainName = $domainName
+        $this.AzureResource = $azureResource
+        $this.MasterServers = [HashSet[string]]::new()
+
+        foreach($item in $masterServers) {
+            $this.MasterServers.Add($item.ToString()) | Out-Null
         }
     }
 
-    public class AzureLoginRequiredException : System.Exception { }
+    DnsForwardingRule(
+        [string]$domainName, 
+        [bool]$azureResource, 
+        [ISet[string]]$masterServers
+    ) {
+        $this.Init($domainName, $azureResource, $masterServers)
+    }
 
-    public class DnsForwardingRule {
-        public string DomainName { get; protected set; }
-        public bool AzureResource { get; protected set; }
-        public System.Collections.Generic.ISet<string> MasterServers { get; protected set; }  
+    DnsForwardingRule(
+        [string]$domainName,
+        [bool]$azureResource,
+        [IEnumerable[string]]$masterServers 
+    ) {
+        $this.Init($domainName, $azureResource, $masterServers)
+    }
 
-        public DnsForwardingRule(string domainName, bool azureResource, System.Collections.Generic.ISet<string> masterServers) {
-            DomainName = domainName;
-            AzureResource = azureResource;
-            MasterServers = masterServers; 
-        }
+    DnsForwardingRule(
+        [string]$domainName,
+        [bool]$azureResource,
+        [IEnumerable]$masterServers
+    ) {
+        $this.Init($domainName, $azureResource, $masterServers)
+    }
 
-        public DnsForwardingRule(string domainName, bool azureResource, System.Collections.Generic.IEnumerable<string> masterServers) {
-            DomainName = domainName;
-            AzureResource = azureResource;
-            MasterServers = new System.Collections.Generic.HashSet<string>(masterServers);
+    DnsForwardingRule([PSCustomObject]$customObject) {
+        $properties = $customObject | `
+            Get-Member | `
+            Where-Object { $_.MemberType -eq "NoteProperty" }
+
+        $hasDomainName = $properties | `
+            Where-Object { $_.Name -eq "DomainName" }
+        if ($null -eq $hasDomainName) {
+            throw [ArgumentException]::new(
+                "Deserialized customObject does not have the DomainName property.", "customObject")
         }
         
-        public override int GetHashCode() {
-            return DomainName.GetHashCode();
+        $hasAzureResource = $properties | `
+            Where-Object { $_.Name -eq "AzureResource" }
+        if ($null -eq $hasAzureResource) {
+            throw [ArgumentException]::new(
+                "Deserialized customObject does not have the AzureResource property.", "customObject")
         }
 
-        public override bool Equals(object obj) {
-            return obj.GetHashCode() == GetHashCode();
+        $hasMasterServers = $properties | `
+            Where-Object { $_.Name -eq "MasterServers" }
+        if ($null -eq $hasMasterServers) {
+            throw [ArgumentException]::new(
+                "Deserialized customObject does not have the MasterServers property.", "customObject")
+        }
+
+        if ($customObject.MasterServers -isnot [object[]]) {
+            throw [ArgumentException]::new(
+                "Deserialized MasterServers is not an array.", "customObject")
+        }
+
+        $this.Init(
+            $customObject.DomainName, 
+            $customObject.AzureResource, 
+            $customObject.MasterServers)
+    }
+
+    [int] GetHashCode() {
+        return $this.DomainName.GetHashCode()
+    }
+
+    [bool] Equals([object]$obj) {
+        return $obj.GetHashCode() -eq $this.GetHashCode()
+    }
+}
+
+class DnsForwardingRuleSet {
+    [ISet[DnsForwardingRule]]$DnsForwardingRules
+
+    DnsForwardingRuleSet() {
+        $this.DnsForwardingRules = [HashSet[DnsForwardingRule]]::new()
+    }
+
+    DnsForwardingRuleSet([IEnumerable]$dnsForwardingRules) {
+        $this.DnsForwardingRules = [HashSet[DnsForwardingRule]]::new()
+
+        foreach($rule in $dnsForwardingRules) {
+            $this.DnsForwardingRules.Add($rule) | Out-Null
         }
     }
 
-    public class DnsForwardingRuleSet {
-        public System.Collections.Generic.ISet<DnsForwardingRule> DnsForwardingRules { get; protected set; }
+    DnsForwardingRuleSet([PSCustomObject]$customObject) {
+        $properties = $customObject | `
+            Get-Member | `
+            Where-Object { $_.MemberType -eq "NoteProperty" }
+        
+        $hasDnsForwardingRules = $properties | `
+            Where-Object { $_.Name -eq "DnsForwardingRules" }
+        if ($null -eq $hasDnsForwardingRules) {
+            throw [ArgumentException]::new(
+                "Deserialized customObject does not have the DnsForwardingRules property.", "customObject")
+        }
 
-        public DnsForwardingRuleSet() {
-            DnsForwardingRules = new System.Collections.Generic.HashSet<DnsForwardingRule>();
+        if ($customObject.DnsForwardingRules -isnot [object[]]) {
+            throw [ArgumentException]::new(
+                "Deserialized DnsForwardingRules is not an array.", "customObject")
+        }
+
+        $this.DnsForwardingRules = [HashSet[DnsForwardingRule]]::new()
+        foreach($rule in $customObject.DnsForwardingRules) {
+            $this.DnsForwardingRules.Add([DnsForwardingRule]::new($rule)) | Out-Null
         }
     }
+}
 
-    public enum OSFeatureKind {
-        WindowsServerFeature,
-        WindowsClientCapability,
-        WindowsClientOptionalFeature
+# class CollectionsDeserializer : PSTypeConverter {
+#     [bool] CanConvertFrom([object]$sourceValue, [Type]$destinationType) {
+#         $matches = $sourceValue.PSTypeNames | Where-Object { $_ -like "System.Collections.Generic.HashSet`1[[System.String*]]" }
+#         return $null -ne $matches
+#     }
+
+#     [bool] CanConvertTo([object]$sourceValue, [Type]$destinationType) {
+#         return $true
+#     }
+    
+#     [object] ConvertFrom(
+#         [object]$sourceValue, 
+#         [Type]$destinationType, 
+#         [IFormatProvider]$formatProvider, 
+#         [bool]$ignoreCase
+#     ) {
+#         return [IEnumerable]$sourceValue
+#     }
+
+#     [object] ConvertTo(
+#         [object]$sourceValue, 
+#         [Type]$destinationType, 
+#         [IFormatProvider]$formatProvider, 
+#         [bool]$ignoreCase
+#     ) {
+#         throw [System.NotImplementedException]::new()
+#     }
+# }
+
+# class DnsForwardingRuleSetDeserializer : PSTypeConverter {
+#     [bool] CanConvertFrom([object]$sourceValue, [Type]$destinationType) {
+#         return ([PSObject]$sourceValue).PSTypeNames.Contains("Deserialized.DnsForwardingRuleSet")
+#     }
+
+#     [bool] ConvertFrom(
+#         [object]$sourceValue, 
+#         [Type]$destinationType, 
+#         [IFormatProvider]$formatProvider, 
+#         [bool]$ignoreCase
+#     ) {
+#         $psObj = [PSObject]$sourceValue
+#         return [DnsForwardingRuleSet]
+#     }
+# }
+
+enum OSFeatureKind {
+    WindowsServerFeature
+    WindowsClientCapability
+    WindowsClientOptionalFeature
+}
+
+class OSFeature {
+    [string]$Name
+    [string]$InternalOSName 
+    [string]$Version 
+    [bool]$Installed
+    [OSFeatureKind]$FeatureKind
+
+    OSFeature(
+        [string]$name,
+        [string]$internalOSName,
+        [string]$version,
+        [bool]$installed,
+        [OSFeatureKind]$featureKind
+    ) {
+        $this.Name = $name
+        $this.InternalOSName = $internalOSName
+        $this.Version = $version
+        $this.Installed = $installed
+        $this.FeatureKind = $featureKind
     }
-
-    public class OSFeature {
-        public string Name { get; protected set; }
-        public string InternalOSName { get; protected set; }
-        public string Version { get; protected set; }
-        public bool Installed { get; protected set; }
-        public OSFeatureKind FeatureKind { get; protected set; }
-
-        public OSFeature(
-            string name, 
-            string internalOSName, 
-            string version, 
-            bool installed, 
-            OSFeatureKind featureKind) {
-                Name = name;
-                InternalOSName = internalOSName;
-                Version = version;
-                Installed = installed;
-                FeatureKind = featureKind;
-        }
-    }
-"@
+}
 
 $azurePrivateDnsIp = "168.63.129.16"
 $DnsForwarderTemplate = "https://raw.githubusercontent.com/wmgries/azure-files-samples/HybridManagement/dns-forwarder/azuredeploy.json"
@@ -178,12 +342,19 @@ function Copy-RemoteModule {
     )
 
     $moduleInfo = Get-CurrentModule
-    $remoteModulePath = Invoke-Command `
+    $moduleFiles = Get-ModuleFiles | `
+        Get-Item | `
+        Select-Object `
+            @{ Name = "Name"; Expression = { $_.Name } }, 
+            @{ Name = "Content"; Expression = { (Get-Content -Path $_.FullName) } }
+
+    Invoke-Command `
             -Session $Session  `
-            -ArgumentList $moduleInfo.Name, $moduleInfo.Version.ToString() `
+            -ArgumentList $moduleInfo.Name, $moduleInfo.Version.ToString(), $moduleFiles `
             -ScriptBlock {
                 $moduleName = $args[0]
                 $moduleVersion = $args[1]
+                $moduleFiles = $args[2]
 
                 $psModPath = $env:PSModulePath.Split(";")[0]
                 if (!(Test-Path -Path $psModPath)) {
@@ -196,14 +367,12 @@ function Copy-RemoteModule {
                     New-Item -Path $modulePath -ItemType Directory | Out-Null
                 }
 
-                $modulePath
+                foreach($moduleFile in $moduleFiles) {
+                    $filePath = [System.IO.Path]::Combine($modulePath, $moduleFile.Name)
+                    $fileContent = $moduleFile.Content
+                    Set-Content -Path $filePath -Value $fileContent
+                }
             }
-
-    $moduleFiles = Get-ModuleFiles
-    Copy-Item `
-            -ToSession $Session `
-            -Path $moduleFiles `
-            -Destination $remoteModulePath
 }
 
 $sessionDictionary = [System.Collections.Generic.Dictionary[System.Tuple[string, string], System.Management.Automation.Runspaces.PSSession]]::new()
@@ -304,6 +473,8 @@ function Initialize-RemoteSession {
                 $moduleName = $args[0]
                 Import-Module -Name $moduleName
             }
+
+    return $Session
 }
 
 function Get-IsElevatedSession {
@@ -880,7 +1051,7 @@ function Register-OfflineMachine {
                 Select-Object -ExpandProperty DNSRoot
         } else {
             try {
-                Get-ADDomainInternal -Identity $Domain 
+                Get-ADDomainInternal -Identity $Domain | Out-Null
             } catch {
                 throw [System.ArgumentException]::new(
                     "Provided domain $Domain was not found.", "Domain")
@@ -1431,7 +1602,7 @@ function New-AzDnsForwardingRuleSet {
 function Clear-DnsClientCacheInternal {
     switch((Get-OSPlatform)) {
         "Windows" {
-            Clear-DnsServerCache
+            Clear-DnsClientCache
         }
 
         "Linux" {
@@ -1673,10 +1844,10 @@ function New-AzDnsForwarder {
 
     # Get domain to join
     if ([string]::IsNullOrEmpty($DomainToJoin)) {
-        $domain = Get-ADDomainInternal
+        $DomainToJoin = (Get-ADDomainInternal).DNSRoot
     } else {
         try {
-            $domain = Get-ADDomainInternal -Identity $DomainToJoin
+            $DomainToJoin = (Get-ADDomainInternal -Identity $DomainToJoin).DNSRoot
         } catch {
             throw [System.ArgumentException]::new(
                 "Could not find the domain $DomainToJoin", "DomainToJoin")
@@ -1702,13 +1873,19 @@ function New-AzDnsForwarder {
 
     $filterCriteria = ($DnsForwarderRootName + "-*")
     $currentIncrementor = Get-ADComputerInternal -Filter { Name -like $filterCriteria } | 
-        Select-Object @{ 
+        Select-Object Name, 
+            @{ 
                 Name = "Incrementor"; 
-                Expression = { $intCaster.Invoke($_.DNSHostName, $DnsForwarderRootName, $domain.DNSRoot) } } | `
-        Select-Object -ExpandProperty Name | `
+                Expression = { $intCaster.Invoke($_.DNSHostName, $DnsForwarderRootName, $DomainToJoin) } 
+            } | `
+        Select-Object -ExpandProperty Incrementor | `
         Measure-Object -Maximum | `
         Select-Object -ExpandProperty Maximum
     
+    if ($null -eq $currentIncrementor) {
+        $currentIncrementor = -1
+    }
+
     if ($currentIncrementor -lt 1000) {
         $currentIncrementor++
     }
@@ -1718,15 +1895,19 @@ function New-AzDnsForwarder {
         throw [System.NotImplementedException]::new("Only exactly 2 forwarders are supported.")
     }
 
+    $redundancyTop = $currentIncrementor + $DnsForwarderRedundancyCount
     $dnsForwarderNames = [string[]]@()
-    for($i = $currentIncrementor; $i -lt $DnsForwarderRedundancyCount; $i++) {
-        $dnsForwarderNames += ($DnsForwarderRootName + "-" + $i)
+    while ($currentIncrementor -lt $redundancyTop) {
+        $dnsForwarderNames += ($DnsForwarderRootName + "-" + $currentIncrementor)
+        $currentIncrementor++
     }
     
-    $odjBlobs = $dnsForwarderNames | Register-OfflineMachine -Domain $DomainToJoin
+    $odjBlobs = $dnsForwarderNames | `
+        Register-OfflineMachine -Domain $DomainToJoin | `
+        ConvertTo-SecureString -AsPlainText -Force
     
     ## Encode ruleset
-    $encodedDnsForwardingRuleSet = $DnsForwardingRuleSet | ConvertFrom-EncodedJson -Depth 3
+    $encodedDnsForwardingRuleSet = $DnsForwardingRuleSet | ConvertTo-EncodedJson -Depth 3
 
     try {
         $templateResult = New-AzResourceGroupDeployment `
@@ -1742,6 +1923,7 @@ function New-AzDnsForwarder {
             -odjBlob1 $odjBlobs[1] `
             -encodedForwardingRules $encodedDnsForwardingRuleSet
     } catch {
+        Write-Verbose $_
         Write-Error -Message "This error message will eventually be replaced by a rollback functionality." -ErrorAction Stop
     }
 
@@ -1758,43 +1940,36 @@ function New-AzDnsForwarder {
     $virtualNetwork | Set-AzVirtualNetwork | Out-Null
 
     foreach($dnsForwarder in $dnsForwarderNames) {
-        Restart-AzVM -ResourceGroupName $DnsServerResourceGroupName -Name $dnsForwarder
+        Restart-AzVM `
+                -ResourceGroupName $DnsServerResourceGroupName `
+                -Name $dnsForwarder | `
+            Out-Null
     }
 
+    # This should be moved up
     if ($null -eq $OnPremDnsHostNames) {
-        if ([string]::IsNullOrEmpty($OnPremDomainName)) {
-            $domain = Get-ADDomainInternal
-        } else {
-            $domain = Get-ADDomainInternal -Identity $OnPremDomainName
-        }
-
-        if (!$SkipParentDomain) {
-            while($null -ne $domain.ParentDomain) {
-                $domain = Get-ADDomainInternal -Identity $domain.ParentDomain
-            }
-        }
-
-        $onPremDnsServers = Resolve-DnsNameInternal -Name $domain.DNSRoot | `
-            Where-Object { $_.Type -eq "A" } | `
-            Select-Object -ExpandProperty IPAddress
-    } else {
-        $onPremDnsServers = $OnPremDnsHostNames | `
-            Resolve-DnsNameInternal | `
-            Where-Object { $_.Type -eq "A" } | `
-            Select-Object -ExpandProperty IPAddress
+        $onPremDnsServers = $DnsForwardingRuleSet.DnsForwardingRules | `
+            Where-Object { $_.AzureResource -eq $false } | `
+            Select-Object -ExpandProperty MasterServers
+        
+        $OnPremDnsHostNames = $onPremDnsServers | `
+            ForEach-Object { [System.Net.Dns]::GetHostEntry($_) } | `
+            Select-Object -ExpandProperty HostName
     }
 
-    foreach($server in $onPremDnsServers) {
+    foreach($server in $OnPremDnsHostNames) {
+        # This assumes that a credential is given.
         $session = Initialize-RemoteSession `
                 -ComputerName $server `
                 -Credential $Credential `
                 -InstallViaCopy
         
+        $serializedRuleSet = $DnsForwardingRuleSet | ConvertTo-Json -Compress -Depth 3
         Invoke-Command `
                 -Session $session `
-                -ArgumentList $DnsForwardingRuleSet, $dnsForwarder0PrivateIp, $dnsForwarder1PrivateIp `
+                -ArgumentList $serializedRuleSet, $dnsForwarder0PrivateIp, $dnsForwarder1PrivateIp `
                 -ScriptBlock {
-                    $DnsForwardingRuleSet = $args[0]
+                    $DnsForwardingRuleSet = [DnsForwardingRuleSet]::new(($args[0] | ConvertFrom-Json))
                     $dnsForwarder0PrivateIp = $args[1]
                     $dnsForwarder1PrivateIp = $args[2]
 
