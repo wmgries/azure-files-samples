@@ -438,6 +438,11 @@ function Initialize-RemoteSession {
             
             $sessionDictionary.Add($lookupTuple, $Session)
         } else {
+            Remove-PSSession `
+                -Session $Session `
+                -WarningAction SilentlyContinue `
+                -ErrorAction SilentlyContinue
+
             $Session = $existingSession
         }
     } else {
@@ -472,6 +477,7 @@ function Initialize-RemoteSession {
             -ScriptBlock {
                 $moduleName = $args[0]
                 Import-Module -Name $moduleName
+                Invoke-Expression -Command "using module $moduleName"
             }
 
     return $Session
@@ -1706,13 +1712,13 @@ function Push-OnPremDnsServerConfiguration {
         [string]$ConflictBehavior = "Overwrite"
     )
 
-    $DnsForwardingRuleSet = $args[0]
-    $AzDnsForwarderIpAddress = $args[1]
-    $ConflictBehavior = $args[2]
+    if ((Get-OSPlatform) -ne "Windows" -or (Get-WindowsInstallationType) -notcontains "Server") {
+        throw [PlatformNotSupportedException]::new()
+    }
 
     $onPremRules = $DnsForwardingRuleSet | `
         Select-Object -ExpandProperty DnsForwardingRules | `
-        Where-Object { !$_.AzureResource }
+        Where-Object { $_.AzureResource }
 
     foreach($rule in $onPremRules) {
         $zone = Get-DnsServerZone | `
@@ -1767,33 +1773,62 @@ function Push-OnPremDnsServerConfiguration {
     }
 }
 
+function Expand-AzResourceId {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true, Position=0, ValueFromPipeline=$true)]
+        [string]$ResourceId
+    )
+
+    process {
+        $split = $ResourceId.Split("/")
+        $split = $split[1..$split.Length]
+    
+        $result = @{ }
+        $key = [string]$null
+        $value = [string]$null
+
+        for($i=0; $i -lt $split.Length; $i++) {
+            if ($i % 2) {
+                $key = $split[$i]
+            } else {
+                $value = $split[$i]
+                $result + @{ $key = $value }
+            }
+        }
+    }
+}
+
 function New-AzDnsForwarder {
     [CmdletBinding()]
 
     param(
         [Parameter(Mandatory=$true)]
-        [string]$DnsServerResourceGroupName,
+        [DnsForwardingRuleSet]$DnsForwardingRuleSet,
 
         [Parameter(Mandatory=$true)]
+        [System.Security.SecureString]$VmTemporaryPassword,
+
+        [Parameter(Mandatory=$true, ParameterSetName="NameParameterSet")]
         [string]$VirtualNetworkResourceGroupName,
 
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory=$true, ParameterSetName="NameParameterSet")]
         [string]$VirtualNetworkName,
 
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory=$true, ParameterSetName="NameParameterSet")]
         [string]$VirtualNetworkSubnetName,
+
+        [Parameter(Mandatory=$true, ParameterSetName="ObjectParameter")]
+        [Microsoft.Azure.Commands.Network.Models.PSSubnet]$VirtualNetworkSubnet,
+
+        [Parameter(Mandatory=$false)]
+        [string]$DnsServerResourceGroupName,
         
         [Parameter(Mandatory=$false)]
         [string]$DnsForwarderRootName = "DnsFwder",
 
         [Parameter(Mandatory=$false)]
         [string]$DomainToJoin,
-
-        [Parameter(Mandatory=$true)]
-        [System.Security.SecureString]$VmTemporaryPassword,
-
-        [Parameter(Mandatory=$true)]
-        [DnsForwardingRuleSet]$DnsForwardingRuleSet,
 
         [Parameter(Mandatory=$false)]
         [int]$DnsForwarderRedundancyCount = 2,
@@ -1833,14 +1868,18 @@ function New-AzDnsForwarder {
 
     # Create resource group for the DNS forwarders, if it hasn't already
     # been created. The resource group will have the same location as the vnet.
-    $dnsServerResourceGroup = Get-AzResourceGroup | `
-        Where-Object { $_.ResourceGroupName -eq $dnsServerResourceGroupName }
+    if ($PSBoundParameters.ContainsKey("DnsServerResourceGroupName")) {
+        $dnsServerResourceGroup = Get-AzResourceGroup | `
+            Where-Object { $_.ResourceGroupName -eq $DnsServerResourceGroupName }
 
-    if ($null -eq $dnsServerResourceGroup) { 
-        $dnsServerResourceGroup = New-AzResourceGroup `
-                -Name $dnsServerResourceGroupName `
-                -Location $virtualNetwork.Location
-    }
+        if ($null -eq $dnsServerResourceGroup) { 
+            $dnsServerResourceGroup = New-AzResourceGroup `
+                    -Name $DnsServerResourceGroupName `
+                    -Location $virtualNetwork.Location
+        }
+    } else {
+        $DnsServerResourceGroupName = $virtualNetwork.ResourceGroupName
+    }    
 
     # Get domain to join
     if ([string]::IsNullOrEmpty($DomainToJoin)) {
@@ -1895,6 +1934,16 @@ function New-AzDnsForwarder {
         throw [System.NotImplementedException]::new("Only exactly 2 forwarders are supported.")
     }
 
+    if ($null -eq $OnPremDnsHostNames) {
+        $onPremDnsServers = $DnsForwardingRuleSet.DnsForwardingRules | `
+            Where-Object { $_.AzureResource -eq $false } | `
+            Select-Object -ExpandProperty MasterServers
+        
+        $OnPremDnsHostNames = $onPremDnsServers | `
+            ForEach-Object { [System.Net.Dns]::GetHostEntry($_) } | `
+            Select-Object -ExpandProperty HostName
+    }
+
     $redundancyTop = $currentIncrementor + $DnsForwarderRedundancyCount
     $dnsForwarderNames = [string[]]@()
     while ($currentIncrementor -lt $redundancyTop) {
@@ -1944,17 +1993,6 @@ function New-AzDnsForwarder {
                 -ResourceGroupName $DnsServerResourceGroupName `
                 -Name $dnsForwarder | `
             Out-Null
-    }
-
-    # This should be moved up
-    if ($null -eq $OnPremDnsHostNames) {
-        $onPremDnsServers = $DnsForwardingRuleSet.DnsForwardingRules | `
-            Where-Object { $_.AzureResource -eq $false } | `
-            Select-Object -ExpandProperty MasterServers
-        
-        $OnPremDnsHostNames = $onPremDnsServers | `
-            ForEach-Object { [System.Net.Dns]::GetHostEntry($_) } | `
-            Select-Object -ExpandProperty HostName
     }
 
     foreach($server in $OnPremDnsHostNames) {
