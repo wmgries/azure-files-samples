@@ -1,7 +1,10 @@
 using namespace System
 using namespace System.Collections
 using namespace System.Collections.Generic
+using namespace System.Collections.Specialized
 using namespace System.Management.Automation
+using namespace System.Text
+using namespace Az.Network
 
 class PSSessionElevationRequiredException : Exception { }
 
@@ -1784,18 +1787,62 @@ function Expand-AzResourceId {
         $split = $ResourceId.Split("/")
         $split = $split[1..$split.Length]
     
-        $result = @{ }
+        $result = [OrderedDictionary]::new()
         $key = [string]$null
         $value = [string]$null
 
         for($i=0; $i -lt $split.Length; $i++) {
-            if ($i % 2) {
+            if (!($i % 2)) {
                 $key = $split[$i]
             } else {
                 $value = $split[$i]
-                $result + @{ $key = $value }
+                $result.Add($key, $value)
+
+                $key = [string]$null
+                $value = [string]$null
             }
         }
+
+        return $result
+    }
+}
+
+function Compress-AzResourceId {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true, Position=0, ValueFromPipeline=$true)]
+        [OrderedDictionary]$ExpandedResourceId
+    )   
+
+    process {
+        $sb = [StringBuilder]::new()
+
+        foreach($entry in $ExpandedResourceId.GetEnumerator()) {
+            $sb.Append(("/" + $entry.Key + "/" + $entry.Value)) | Out-Null
+        }
+
+        return $sb.ToString()
+    }
+}
+
+function Get-AzParentResourceId {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true, Position=0, ValueFromPipeline=$true)]
+        [string]$ResourceId
+    )
+
+    process {
+        $expandedId = $ResourceId | Expand-AzResourceId
+        
+        # this logic is likely not sufficient, since a resource group or a resource could be named the
+        # same thing as a resource provider, as an example.
+        if ($expandedId[$expandedId.Count - 2] -eq $expandedId["providers"]) {
+            return $ResourceId
+        } 
+            
+        $expandedId.RemoveAt($expandedId.Count - 1)
+        return ($decomposedID | Compress-AzResourceId)
     }
 }
 
@@ -1816,9 +1863,13 @@ function New-AzDnsForwarder {
         [string]$VirtualNetworkName,
 
         [Parameter(Mandatory=$true, ParameterSetName="NameParameterSet")]
+        [Parameter(Mandatory=$true, ParameterSetName="VNetObjectParameter")]
         [string]$VirtualNetworkSubnetName,
 
-        [Parameter(Mandatory=$true, ParameterSetName="ObjectParameter")]
+        [Parameter(Mandatory=$true, ParameterSetName="VNetObjectParameter")]
+        [Microsoft.Azure.Commands.Network.Models.PSVirtualNetwork]$VirtualNetwork,
+
+        [Parameter(Mandatory=$true, ParameterSetName="SubnetObjectParameter")]
         [Microsoft.Azure.Commands.Network.Models.PSSubnet]$VirtualNetworkSubnet,
 
         [Parameter(Mandatory=$false)]
@@ -1843,27 +1894,55 @@ function New-AzDnsForwarder {
         [switch]$SkipParentDomain
     )
 
-    # Verify virtual network is there. $virtualNetwork will be used to populate
-    # information later on.
-    $virtualNetwork = Get-AzVirtualNetwork `
-            -ResourceGroupName $virtualNetworkResourceGroupName | `
-        Where-Object { $_.Name -eq $virtualNetworkName }
+    switch($PSCmdlet.ParameterSetName) {
+        "NameParameterSet" {
+            # Verify virtual network is there. $virtualNetwork will be used to populate
+            # information later on.
+            $VirtualNetwork = Get-AzVirtualNetwork `
+                    -ResourceGroupName $virtualNetworkResourceGroupName | `
+                Where-Object { $_.Name -eq $virtualNetworkName }
 
-    if ($null -eq $virtualNetwork) {
-        Write-Error `
-                -Message "Virtual network $virtualNetworkName does not exist in resource group $virtualNetworkResourceGroupName." `
-                -ErrorAction Stop
-    }
+            if ($null -eq $VirtualNetwork) {
+            Write-Error `
+                    -Message "Virtual network $virtualNetworkName does not exist in resource group $virtualNetworkResourceGroupName." `
+                    -ErrorAction Stop
+            }
 
-    # Verify virtual network's subnet. 
-    $virtualNetworkSubnet = $virtualNetwork | `
-        Select-Object -ExpandProperty Subnets | `
-        Where-Object { $_.Name -eq $virtualNetworkSubnetName } 
+            # Verify virtual network's subnet. 
+            $virtualNetworkSubnet = $VirtualNetwork | `
+                Select-Object -ExpandProperty Subnets | `
+                Where-Object { $_.Name -eq $virtualNetworkSubnetName } 
 
-    if ($null -eq $virtualNetworkSubnet) {
-        Write-Error `
-                -Message "Subnet $virtualNetworkSubnetName does not exist in virtual network $virtualNetworkName." `
-                -ErrorAction Stop
+            if ($null -eq $virtualNetworkSubnet) {
+                Write-Error `
+                        -Message "Subnet $virtualNetworkSubnetName does not exist in virtual network $($VirtualNetwork.Name)." `
+                        -ErrorAction Stop
+            }
+        }
+
+        "VNetObjectParameter" {
+            $VirtualNetworkSubnet = $VirtualNetwork | `
+                Select-Object -ExpandProperty Subnets | `
+                Where-Object { $_.Name -eq $virtualNetworkSubnetName } 
+
+            if ($null -eq $VirtualNetworkSubnet) {
+                Write-Error `
+                        -Message "Subnet $virtualNetworkSubnetName does not exist in virtual network $($VirtualNetwork.Name)." `
+                        -ErrorAction Stop
+            }
+        }
+
+        "SubnetObjectParameter" {
+            $virtualNetworkId = $VirtualNetworkSubnet.Id | Expand-AzResourceId
+            $VirtualNetwork = Get-AzVirtualNetwork `
+                -ResourceGroupName $virtualNetworkId["resourceGroups"] `
+                -Name $virtualNetworkId["virtualNetworks"]
+
+        }
+
+        default {
+            throw [ArgumentException]::new("Unhandled parameter set")
+        }
     }
 
     # Create resource group for the DNS forwarders, if it hasn't already
