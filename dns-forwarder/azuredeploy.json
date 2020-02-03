@@ -35,22 +35,32 @@
                 "description": "The name of the DNS VM."
             }
         },
+        "vmResourceIterator": {
+            "type": "int",
+            "minValue": 0,
+            "maxValue": 999,
+            "metadata": {
+                "description": "An iterator to use for the resources."
+            }
+        },
+        "vmResourceCount": {
+            "type": "int",
+            "minValue": 0,
+            "maxValue": 999,
+            "metadata": {
+                "description": "The number of resources to deploy."
+            }
+        },
         "dnsForwarderTempPassword": {
             "type": "securestring",
             "metadata": {
                 "description": "A temporary password for the DNS VMs to use until they are domain joined."
             }
         },
-        "odjBlob0": {
-            "type": "securestring",
+        "odjBlobs": {
+            "type": "object",
             "metadata": {
                 "description": "The offline domain join blob for the DNS forwarder #1."
-            }
-        },
-        "odjBlob1": {
-            "type": "securestring",
-            "metadata": {
-                "description": "The offline domain join blob for the DNS forwarder #2."
             }
         },
         "encodedForwardingRules": {
@@ -206,7 +216,10 @@
                         "value": "[parameters('dnsForwarderRootName')]"
                     },
                     "vmResourceIterator": {
-                        "value": 0
+                        "value": "[parameters('vmResourceIterator')]"
+                    },
+                    "vmResourceCount": {
+                        "value": "[parameters('vmResourceCount')]"
                     },
                     "vmSubnetId": {
                         "value": "[concat(resourceId(parameters('virtualNetworkResourceGroupName'), 'Microsoft.Network/virtualNetworks', parameters('virtualNetworkName')), '/subnets/', parameters('virtualNetworkSubnetName'))]"
@@ -228,15 +241,19 @@
                     }
                 },
                 "templateLink": {
-                    "uri": "https://raw.githubusercontent.com/wmgries/azure-files-samples/dfsn/shared/deployVMs.json"
+                    "uri": "https://raw.githubusercontent.com/wmgries/azure-files-samples/HybridManagement/shared/deployVMs.json"
                 }
             }
         },
         {
             "type": "Microsoft.Compute/virtualMachines/extensions",
-            "name": "[concat(parameters('dnsForwarderRootName'), '-0/setupscript')]",
+            "name": "[concat(parameters('dnsForwarderRootName'), '-', string(copyIndex('scriptExtIterator', parameters('vmResourceIterator'))), '/setupscript')]",
             "apiVersion": "2018-06-01",
             "location": "[parameters('location')]",
+            "copy": {
+                "name": "scriptExtIterator",
+                "count": "[parameters('vmResourceCount')]"
+            },
             "dependsOn": [
                 "[resourceId('Microsoft.Resources/deployments', 'deployVMs')]"
             ],
@@ -252,43 +269,10 @@
                     ]
                 },
                 "protectedSettings": {
-                    "commandToExecute": "[concat(ps.scriptStart(variables('scriptName')), ps.paramString('EncodedForwardingRules', parameters('encodedForwardingRules')), ps.paramString('OdjBlob', parameters('odjBlob0')), ps.paramString('TempUser', variables('vmTempUsername')), ps.scriptEnd())]"
-                }
-            }
-        },
-        {
-            "type": "Microsoft.Compute/virtualMachines/extensions",
-            "name": "[concat(parameters('dnsForwarderRootName'), '-1/setupscript')]",
-            "apiVersion": "2018-06-01",
-            "location": "[parameters('location')]",
-            "dependsOn": [
-                "[resourceId('Microsoft.Resources/deployments', 'deployVMs')]"
-            ],
-            "properties": {
-                "publisher": "Microsoft.Compute",
-                "type": "CustomScriptExtension",
-                "typeHandlerVersion": "1.9",
-                "autoUpgradeMinorVersion": true,
-                "settings": {
-                    "fileUris": [ 
-                        "[variables('scriptURL')]",
-                        "[variables('sharedUtilitiesURL')]"
-                    ]
-                },
-                "protectedSettings": {
-                    "commandToExecute": "[concat(ps.scriptStart(variables('scriptName')), ps.paramString('EncodedForwardingRules', parameters('encodedForwardingRules')), ps.paramString('OdjBlob', parameters('odjBlob1')), ps.paramString('TempUser', variables('vmTempUsername')), ps.scriptEnd())]"
+                    "commandToExecute": "[concat(ps.scriptStart(variables('scriptName')), ps.paramString('EncodedForwardingRules', parameters('encodedForwardingRules')), ps.paramString('OdjBlob', parameters('odjBlobs').DomainJoinBlobs[copyIndex('scriptExtIterator')]), ps.paramString('TempUser', variables('vmTempUsername')), ps.scriptEnd())]"
                 }
             }
         }
     ],
-    "outputs": {
-        "dnsForwarder0-PrivateIP": {
-            "type": "string",
-            "value": "[reference('deployVMs').outputs.vm0NIC.value.ipConfigurations[0].properties.privateIPAddress]"
-        }, 
-        "dnsForwarder1-PrivateIP": {
-            "type": "string",
-            "value": "[reference('deployVMs').outputs.vm1NIC.value.ipConfigurations[0].properties.privateIPAddress]"
-        }
-    }
+    "outputs": { }
 }

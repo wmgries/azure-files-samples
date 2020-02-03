@@ -2019,10 +2019,7 @@ function New-AzDnsForwarder {
         $currentIncrementor++
     }
 
-    # Register new DNS servers for offline domain join
-    if ($DnsForwarderRedundancyCount -ne 2) {
-        throw [System.NotImplementedException]::new("Only exactly 2 forwarders are supported.")
-    }
+    $incrementorSeed = $currentIncrementor
 
     if ($null -eq $OnPremDnsHostNames) {
         $onPremDnsServers = $DnsForwardingRuleSet.DnsForwardingRules | `
@@ -2034,6 +2031,7 @@ function New-AzDnsForwarder {
             Select-Object -ExpandProperty HostName
     }
 
+    # Register new DNS servers for offline domain join
     $redundancyTop = $currentIncrementor + $DnsForwarderRedundancyCount
     $dnsForwarderNames = [string[]]@()
     while ($currentIncrementor -lt $redundancyTop) {
@@ -2041,9 +2039,8 @@ function New-AzDnsForwarder {
         $currentIncrementor++
     }
     
-    $odjBlobs = $dnsForwarderNames | `
-        Register-OfflineMachine -Domain $DomainToJoin | `
-        ConvertTo-SecureString -AsPlainText -Force
+    $odjBlobs = $dnsForwarderNames | Register-OfflineMachine -Domain $DomainToJoin
+    $domainJoinParameters = @{ "Domain" = $DomainToJoin; "DomainJoinBlobs" = $odjBlobs }
     
     ## Encode ruleset
     $encodedDnsForwardingRuleSet = $DnsForwardingRuleSet | ConvertTo-EncodedJson -Depth 3
@@ -2057,25 +2054,35 @@ function New-AzDnsForwarder {
             -virtualNetworkName $VirtualNetworkName `
             -virtualNetworkSubnetName $VirtualNetworkSubnetName `
             -dnsForwarderRootName $DnsForwarderRootName `
+            -vmResourceIterator $incrementorSeed `
+            -vmResourceCount $DnsForwarderRedundancyCount `
             -dnsForwarderTempPassword $VmTemporaryPassword `
-            -odjBlob0 $odjBlobs[0] `
-            -odjBlob1 $odjBlobs[1] `
-            -encodedForwardingRules $encodedDnsForwardingRuleSet
+            -odjBlobs $domainJoinParameters `
+            -encodedForwardingRules $encodedDnsForwardingRuleSet `
+            -ErrorAction Stop
     } catch {
         Write-Verbose $_
         Write-Error -Message "This error message will eventually be replaced by a rollback functionality." -ErrorAction Stop
     }
 
-    $dnsForwarder0PrivateIp = $templateResult.Outputs.'dnsForwarder0-PrivateIP'.Value
-    $dnsForwarder1PrivateIp = $templateResult.Outputs.'dnsForwarder1-PrivateIP'.Value
+    $nicNames = $dnsForwarderNames | `
+        Select-Object @{ Name = "NIC"; Expression = { ($_ + "-NIC") } } | `
+        Select-Object -ExpandProperty NIC
+
+    $ipAddresses = Get-AzNetworkInterface -ResourceGroupName $DnsServerResourceGroupName | `
+        Where-Object { $_.Name -in $nicNames } | `
+        Select-Object -ExpandProperty IpConfigurations | `
+        Select-Object -ExpandProperty PrivateIpAddress
 
     if ($null -eq $virtualNetwork.DhcpOptions.DnsServers) {
         $virtualNetwork.DhcpOptions.DnsServers = 
             [System.Collections.Generic.List[string]]::new()
     }
+
+    foreach($ipAddress in $ipAddresses) {
+        $virtualNetwork.DhcpOptions.DnsServers.Add($ipAddress)
+    }
     
-    $virtualNetwork.DhcpOptions.DnsServers.Add($dnsForwarder0PrivateIp)
-    $virtualNetwork.DhcpOptions.DnsServers.Add($dnsForwarder1PrivateIp)
     $virtualNetwork | Set-AzVirtualNetwork | Out-Null
 
     foreach($dnsForwarder in $dnsForwarderNames) {
@@ -2095,15 +2102,14 @@ function New-AzDnsForwarder {
         $serializedRuleSet = $DnsForwardingRuleSet | ConvertTo-Json -Compress -Depth 3
         Invoke-Command `
                 -Session $session `
-                -ArgumentList $serializedRuleSet, $dnsForwarder0PrivateIp, $dnsForwarder1PrivateIp `
+                -ArgumentList $serializedRuleSet, ([string[]]$ipAddresses) `
                 -ScriptBlock {
                     $DnsForwardingRuleSet = [DnsForwardingRuleSet]::new(($args[0] | ConvertFrom-Json))
-                    $dnsForwarder0PrivateIp = $args[1]
-                    $dnsForwarder1PrivateIp = $args[2]
+                    $dnsForwarderIPs = ([string[]]$args[1])
 
                     Push-OnPremDnsServerConfiguration `
                             -DnsForwardingRuleSet $DnsForwardingRuleSet `
-                            -AzDnsForwarderIpAddress $dnsForwarder0PrivateIp, $dnsForwarder1PrivateIp 
+                            -AzDnsForwarderIpAddress $dnsForwarderIPs
                 }
     }    
     

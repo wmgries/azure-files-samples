@@ -25,6 +25,14 @@
                 "description": "An iterator to use for resources."
             }
         },
+        "vmResourceCount": {
+            "type": "int",
+            "minValue": 0,
+            "maxValue": 999,
+            "metadata": {
+                "description": "The number of resources to deploy."
+            }
+        },
         "vmSubnetId": {
             "type": "string",
             "metadata": {
@@ -102,11 +110,15 @@
         {
             "type": "Microsoft.Compute/virtualMachines",
             "apiVersion": "2019-03-01",
-            "name": "[concat(parameters('vmResourceRootName'), '-', string(parameters('vmResourceIterator')))]",
+            "name": "[concat(parameters('vmResourceRootName'), '-', string(copyIndex('vmIterator', parameters('vmResourceIterator'))))]",
             "location": "[parameters('location')]",
+            "copy": {
+                "name": "vmIterator",
+                "count": "[parameters('vmResourceCount')]"
+            },
             "dependsOn": [
                 "[resourceId('Microsoft.Compute/availabilitySets', concat(parameters('vmResourceRootName'), '-AvailabilitySet'))]",
-                "[resourceId('Microsoft.Network/networkInterfaces', concat(parameters('vmResourceRootName'), '-', string(parameters('vmResourceIterator')), '-NIC'))]"
+                "[resourceId('Microsoft.Network/networkInterfaces', concat(parameters('vmResourceRootName'), '-', string(copyIndex('vmIterator', parameters('vmResourceIterator'))), '-NIC'))]"
             ],
             "properties": {
                 "availabilitySet": {
@@ -124,7 +136,7 @@
                     },
                     "osDisk": {
                         "osType": "Windows",
-                        "name": "[concat(parameters('vmResourceRootName'), '-', string(parameters('vmResourceIterator')), '-OsDisk')]",
+                        "name": "[concat(parameters('vmResourceRootName'), '-', string(copyIndex('vmIterator', parameters('vmResourceIterator'))), '-OsDisk')]",
                         "createOption": "FromImage",
                         "caching": "ReadWrite",
                         "managedDisk": {
@@ -135,7 +147,7 @@
                     "dataDisks": []
                 },
                 "osProfile": {
-                    "computerName": "[concat(parameters('vmResourceRootName'), '-', string(parameters('vmResourceIterator')))]",
+                    "computerName": "[concat(parameters('vmResourceRootName'), '-', string(copyIndex('vmIterator', parameters('vmResourceIterator'))))]",
                     "adminUsername": "[parameters('vmDefaultUsername')]",
                     "adminPassword": "[parameters('vmDefaultPassword')]",
                     "windowsConfiguration": {
@@ -147,61 +159,7 @@
                 },
                 "networkProfile": {
                     "networkInterfaces": [{
-                        "id": "[resourceId('Microsoft.Network/networkInterfaces', concat(parameters('vmResourceRootName'), '-', string(parameters('vmResourceIterator')), '-NIC'))]"
-                    }]
-                },
-                "licenseType": "Windows_Server"
-            }
-        },
-        {
-            "type": "Microsoft.Compute/virtualMachines",
-            "apiVersion": "2019-03-01",
-            "name": "[concat(parameters('vmResourceRootName'), '-', string(add(parameters('vmResourceIterator'), 1)))]",
-            "location": "[parameters('location')]",
-            "dependsOn": [
-                "[resourceId('Microsoft.Compute/availabilitySets', concat(parameters('vmResourceRootName'), '-AvailabilitySet'))]",
-                "[resourceId('Microsoft.Network/networkInterfaces', concat(parameters('vmResourceRootName'), '-', string(add(parameters('vmResourceIterator'), 1)), '-NIC'))]"
-            ],
-            "properties": {
-                "availabilitySet": {
-                    "id": "[resourceId('Microsoft.Compute/availabilitySets', concat(parameters('vmResourceRootName'), '-AvailabilitySet'))]"
-                },
-                "hardwareProfile": {
-                    "vmSize": "[parameters('vmSize')]"
-                },
-                "storageProfile": {
-                    "imageReference": {
-                        "publisher": "MicrosoftWindowsServer",
-                        "offer": "WindowsServer",
-                        "sku": "[parameters('vmSkuName')]",
-                        "version": "latest"
-                    },
-                    "osDisk": {
-                        "osType": "Windows",
-                        "name": "[concat(parameters('vmResourceRootName'), '-', string(add(parameters('vmResourceIterator'), 1)), '-OsDisk')]",
-                        "createOption": "FromImage",
-                        "caching": "ReadWrite",
-                        "managedDisk": {
-                            "storageAccountType": "[parameters('vmDiskType')]"
-                        },
-                        "diskSizeGB": 127
-                    },
-                    "dataDisks": []
-                },
-                "osProfile": {
-                    "computerName": "[concat(parameters('vmResourceRootName'), '-', string(add(parameters('vmResourceIterator'), 1)))]",
-                    "adminUsername": "[parameters('vmDefaultUsername')]",
-                    "adminPassword": "[parameters('vmDefaultPassword')]",
-                    "windowsConfiguration": {
-                        "provisionVMAgent": true,
-                        "enableAutomaticUpdates": true
-                    },
-                    "secrets": [],
-                    "allowExtensionOperations": true
-                },
-                "networkProfile": {
-                    "networkInterfaces": [{
-                        "id": "[resourceId('Microsoft.Network/networkInterfaces', concat(parameters('vmResourceRootName'), '-', string(add(parameters('vmResourceIterator'), 1)), '-NIC'))]"
+                        "id": "[resourceId('Microsoft.Network/networkInterfaces', concat(parameters('vmResourceRootName'), '-', string(copyIndex('vmIterator', parameters('vmResourceIterator'))), '-NIC'))]"
                     }]
                 },
                 "licenseType": "Windows_Server"
@@ -210,29 +168,11 @@
         {
             "type": "Microsoft.Network/networkInterfaces",
             "apiVersion": "2019-09-01",
-            "name": "[concat(parameters('vmResourceRootName'), '-', string(parameters('vmResourceIterator')), '-NIC')]",
-            "location": "[parameters('location')]",
-            "properties": {
-                "ipConfigurations": [{
-                    "name": "defaultIpConfig",
-                    "properties": {
-                        "privateIPAllocationMethod": "Dynamic",
-                        "subnet": {
-                            "id": "[parameters('vmSubnetId')]"
-                        },
-                        "primary": true,
-                        "privateIPAddressVersion": "IPv4"
-                    }
-                }],
-                "dnsSettings": { "dnsServers": [] },
-                "enableAcceleratedNetworking": false,
-                "enableIPForwarding": false
-            }
-        },
-        {
-            "type": "Microsoft.Network/networkInterfaces",
-            "apiVersion": "2019-09-01",
-            "name": "[concat(parameters('vmResourceRootName'), '-', string(add(parameters('vmResourceIterator'), 1)), '-NIC')]",
+            "copy": {
+                "name": "nicIterator",
+                "count": "[parameters('vmResourceCount')]"
+            },
+            "name": "[concat(parameters('vmResourceRootName'), '-', string(copyIndex('nicIterator', parameters('vmResourceIterator'))), '-NIC')]",
             "location": "[parameters('location')]",
             "properties": {
                 "ipConfigurations": [{
@@ -255,15 +195,7 @@
     "outputs": {
         "vmResourceIterator": {
             "type": "int",
-            "value": "[add(parameters('vmResourceIterator'), 2)]"
-        },
-        "vm0NIC": {
-            "type":"object",
-            "value": "[reference(resourceId('Microsoft.Network/networkInterfaces', concat(parameters('vmResourceRootName'), '-', string(parameters('vmResourceIterator')), '-NIC')))]"
-        },
-        "vm1NIC": {
-            "type": "object",
-            "value": "[reference(resourceId('Microsoft.Network/networkInterfaces', concat(parameters('vmResourceRootName'), '-', string(add(parameters('vmResourceIterator'), 1)), '-NIC')))]"
+            "value": "[add(parameters('vmResourceIterator'), parameters('vmResourceCount'))]"
         }
     }
 }
