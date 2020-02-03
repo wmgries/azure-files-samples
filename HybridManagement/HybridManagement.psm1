@@ -4,6 +4,12 @@ using namespace System.Collections.Generic
 using namespace System.Collections.Specialized
 using namespace System.Management.Automation
 using namespace System.Text
+using module Az.Network
+using module Az.Storage
+using namespace Microsoft.Azure.Commands.Management.Storage.Models
+
+Invoke-Expression -Command "using module Az.Network"
+Invoke-Expression -Command "using module Az.Storage"
 
 class PSSessionElevationRequiredException : Exception { }
 
@@ -2247,5 +2253,340 @@ function Test-AzFileShareConnection {
         foreach($port in $portsToTest) {
             $internalConnectionTest.Invoke($endpoint, $port)
         }  
+    }
+}
+
+function Get-AzStorageShareObjects {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true, ParameterSetName="StorageAccountName")]
+        [string]$ResourceGroupName,
+        
+        [Parameter(Mandatory=$true, ParameterSetName="StorageAccountName")]
+        [string]$StorageAccountName,
+        
+        [Parameter(Mandatory=$true, ParameterSetName="StorageAccountName")]
+        [Parameter(Mandatory=$true, ParameterSetName="StorageAccountObject")]
+        [string]$FileShareName,
+        
+        [Parameter(Mandatory=$true, ParameterSetName="StorageAccountObject", ValueFromPipeline=$true)]
+        [Microsoft.Azure.Commands.Management.Storage.Models.PSStorageAccount]$StorageAccount,
+
+        [Parameter(Mandatory=$true, ParameterSetName="StorageShareObject", ValueFromPipeline=$true)]
+        [Microsoft.Azure.Commands.Management.Storage.Models.PSShare]$FileShare
+    )
+    
+    process {
+        switch($PSCmdlet.ParameterSetName) {
+            "StorageAccountName" {
+                # Get storage account
+                $StorageAccount = Get-AzStorageAccount `
+                        -ResourceGroupName $ResourceGroupName `
+                        -Name $StorageAccountName `
+                        -ErrorAction Stop
+                
+                # Get file share
+                $FileShare = Get-AzRmStorageShare `
+                        -StorageAccount $StorageAccount `
+                        -Name $FileShareName `
+                        -ErrorAction Stop
+            }
+    
+            "StorageAccountObject" {
+                # Get file share 
+                $FileShare = Get-AzRmStorageShare `
+                        -StorageAccount $StorageAccount `
+                        -Name $FileShareName `
+                        -ErrorAction Stop
+            }
+    
+            "StorageShareObject" {
+                $fileShareId = $FileShare.Id | Expand-AzResourceId
+                $StorageAccount = Get-AzStorageAccount `
+                        -ResourceGroupName $fileShareId.resourceGroups `
+                        -Name $fileShareId.storageAccounts `
+                        -ErrorAction Stop
+            }
+    
+            default {
+                throw [ArgumentException]::new("Unrecognized parameter set.")
+            }
+        }
+
+        return [Tuple[PSStorageAccount, PSShare]]::new($StorageAccount, $FileShare)
+    }
+}
+
+function Mount-AzFileShare {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true, ParameterSetName="StorageAccountName")]
+        [string]$ResourceGroupName,
+        
+        [Parameter(Mandatory=$true, ParameterSetName="StorageAccountName")]
+        [string]$StorageAccountName,
+        
+        [Parameter(Mandatory=$true, ParameterSetName="StorageAccountName")]
+        [Parameter(Mandatory=$true, ParameterSetName="StorageAccountObject")]
+        [string]$FileShareName,
+        
+        [Parameter(Mandatory=$true, ParameterSetName="StorageAccountObject", ValueFromPipeline=$true)]
+        [PSStorageAccount]$StorageAccount,
+
+        [Parameter(Mandatory=$true, ParameterSetName="StorageShareObject", ValueFromPipeline=$true)]
+        [PSShare]$FileShare,
+        
+        [Parameter(Mandatory=$false)]
+        [string]$MountPath
+    )
+
+    process {
+        switch ($PSCmdlet.ParameterSetName) {
+            "StorageAccountName" {
+                $objs = Get-AzStorageShareObjects `
+                        -ResourceGroupName $ResourceGroupName `
+                        -StorageAccountName $StorageAccountName `
+                        -FileShareName $FileShareName
+                $StorageAccount = $objs.Item1
+                $FileShare = $objs.Item2
+            }
+
+            "StorageAccountObject" {
+                $objs = Get-AzStorageShareObjects `
+                        -StorageAccount $StorageAccount `
+                        -FileShareName $FileShareName
+                $StorageAccount = $objs.Item1
+                $FileShare = $objs.Item2
+            }
+
+            "StorageShareObject" {
+                $objs = Get-AzStorageShareObjects `
+                        -FileShare $FileShare
+                $StorageAccount = $objs.Item1
+                $FileShare = $objs.Item2
+            }
+
+            default {
+                throw [ArgumentException]::new("Unrecognized parameter set.")
+            }
+        }
+
+        $connectionTest = Test-AzFileShareConnection -StorageAccount $StorageAccount -ProtocolsToCheck SMB
+        if (!$connectionTest.TcpTestSucceeded) {
+            throw [AzureFileShareConnectivityException]::new()
+        }
+
+        $sharePath = Get-AzFileShareOSRelativePath `
+                -StorageAccount $StorageAccount `
+                -FileShare $FileShare
+        
+        switch((Get-OSPlatform)) {
+            "Windows" {
+                if ([string]::IsNullOrEmpty($MountPath)) {
+                    $validLetterRange = 65..90 | `
+                        ForEach-Object { [char]$_ } | `
+                        Where-Object { 
+                            $_ -notin (
+                                Get-PSDrive | `
+                                Where-Object { $_.Provider.Name -eq "FileSystem" } | `
+                                Select-Object -ExpandProperty Name
+                            ) 
+                        }
+                    
+                    if ($null -eq $validLetterRange) {
+                        throw [ArgumentException]::new(
+                            "All drive letters are taken. Either free up drive letters or mount to a path on a volume.", "MountPath")
+                    }
+
+                    $MountPath = $validLetterRange[$validLetterRange.Length - 1] + ":"
+                } elseif ($MountPath.Length -le 3) {
+                    $validLetterRange = 65..90 | `
+                        ForEach-Object { [char]$_ } | `
+                        Where-Object { 
+                            $_ -notin (
+                                Get-PSDrive | `
+                                Where-Object { $_.Provider.Name -eq "FileSystem" } | `
+                                Select-Object -ExpandProperty Name
+                            ) 
+                        }
+                    
+                    if ($MountPath[1] -ne ":" -or !($MountPath[2] -eq "\" -or $MountPath[2] -eq "/")) {
+                        throw [ArgumentException]::new("Invalid path: $MountPath.", "MountPath")
+                    }
+
+                    if ($MountPath[0].ToUpperInvariant() -notin $validLetterRange) {
+                        throw [ArgumentException]::new(
+                            "Chosen drive letter $($MountPath[0]) is taken.", "MountPath")
+                    }
+
+                    $MountPath = $MountPath[0] + ":"
+                } else {
+                    if ((Test-Path -Path $MountPath)) {
+                        throw [ArgumentException]::new("Mount path already exists.", "MountPath")
+                    }
+                }
+
+                if ($MountPath.Length -gt 2) {
+                    Test-IsElevatedSession
+                    New-Item -ItemType SymbolicLink -Path $MountPath -Target $sharePath | Out-Null
+                } else {
+                    if ((Get-IsElevatedSession)) {
+                        throw [PSSessionShouldNotBeElevatedException]::new()
+                    }
+
+                    if ((Get-OSVersion) -ge [Version]::new(10,0,0,0)) {
+                        New-SmbMapping `
+                                -LocalPath $MountPath `
+                                -RemotePath $sharePath `
+                                -Persistent $true `
+                                -ErrorAction Stop | `
+                            Out-Null
+                    } else {
+                        $cmdResults = Invoke-Expression `
+                                -Command "net use $MountPath $sharePath /PERSISTENT:YES"
+                        
+                        if ($cmdResults -notlike "*successfully*") {
+                            Write-Error `
+                                    -Message "Mount command failed for path $MountPath and target $sharePath" `
+                                    -ErrorAction Stop
+                        }
+                    }
+                }
+            }
+
+            "Linux" {
+                throw [PlatformNotSupportedException]::new()
+            }
+
+            "OSX" {
+                throw [PlatformNotSupportedException]::new()
+            }
+
+            default {
+                throw [PlatformNotSupportedException]::new()
+            }
+        }
+    }    
+}
+
+function Dismount-AzFileShare {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true, ParameterSetName="StorageAccountName")]
+        [string]$ResourceGroupName,
+        
+        [Parameter(Mandatory=$true, ParameterSetName="StorageAccountName")]
+        [string]$StorageAccountName,
+        
+        [Parameter(Mandatory=$true, ParameterSetName="StorageAccountName")]
+        [Parameter(Mandatory=$true, ParameterSetName="StorageAccountObject")]
+        [string]$FileShareName,
+        
+        [Parameter(Mandatory=$true, ParameterSetName="StorageAccountObject", ValueFromPipeline=$true)]
+        [PSStorageAccount]$StorageAccount,
+
+        [Parameter(Mandatory=$true, ParameterSetName="StorageShareObject", ValueFromPipeline=$true)]
+        [PSShare]$FileShare,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$SearchWindowsSymlinks
+    )
+
+    begin {
+        if ($PSBoundParameters.ContainsKey("SearchWindowsSymlinks")) {
+            Test-IsElevatedSession
+
+            if ((Get-OSPlatform) -eq "Windows") {
+                $possibleSymlinks = Get-Volume | `
+                    Where-Object { $_.FileSystemType -eq "NTFS" -or $_.FileSystemType -eq "ReFS" } | `
+                    Where-Object { $null -ne $_.DriveLetter } | `
+                    Select-Object @{ Name = "Path"; Expression = { $_.DriveLetter + ":\" } } |
+                    Get-ChildItem `
+                        -Recurse `
+                        -Attributes Directory+ReparsePoint `
+                        -ErrorAction SilentlyContinue | `
+                    Where-Object { $_.LinkType -eq "SymbolicLink" }
+            } else {
+                throw [ArgumentException]::new(
+                    "Parameter SearchWindowsSymlinks only applies to Windows.", "SearchWindowsSymlinks")
+            }
+        }
+    }
+
+    process {
+        switch ($PSCmdlet.ParameterSetName) {
+            "StorageAccountName" {
+                $objs = Get-AzStorageShareObjects `
+                        -ResourceGroupName $ResourceGroupName `
+                        -StorageAccountName $StorageAccountName `
+                        -FileShareName $FileShareName
+                $StorageAccount = $objs.Item1
+                $FileShare = $objs.Item2
+            }
+
+            "StorageAccountObject" {
+                $objs = Get-AzStorageShareObjects `
+                        -StorageAccount $StorageAccount `
+                        -FileShareName $FileShareName
+                $StorageAccount = $objs.Item1
+                $FileShare = $objs.Item2
+            }
+
+            "StorageShareObject" {
+                $objs = Get-AzStorageShareObjects `
+                        -FileShare $FileShare
+                $StorageAccount = $objs.Item1
+                $FileShare = $objs.Item2
+            }
+
+            default {
+                throw [ArgumentException]::new("Unrecognized parameter set.")
+            }
+        }
+
+        $sharePath = Get-AzFileShareOSRelativePath `
+                -StorageAccount $StorageAccount `
+                -FileShare $FileShare
+        
+        switch ((Get-OSPlatform)) {
+            "Windows" {
+                if ((Get-OSVersion) -ge [Version]::new(10,0,0,0)) {
+                    Get-SmbMapping | `
+                        Where-Object { $_.RemotePath -eq $sharePath } | `
+                        Remove-SmbMapping -Force -Confirm:$false
+                } else {
+                    $cmdResults = Get-PSDrive | `
+                        Where-Object { $_.Provider.Name -eq "FileSystem" } | `
+                        Where-Object { $_.DisplayRoot -eq $sharePath } | `
+                        ForEach-Object { 
+                            Invoke-Expression -Command "net use $($_.Name): /delete /y" 
+                        }
+                    
+                    if ($cmdResults -notlike "*successfully*") {
+                        Write-Error `
+                                -Message "Dismount command failed for target $sharePath" `
+                                -ErrorAction Stop
+                    } 
+                }
+               
+                if ($SearchWindowsSymlinks) {
+                    $possibleSymlinks | `
+                        Where-Object { $sharePath -in $_.Target.Replace("UNC", "\") } | `
+                        Remove-Item -Force -Confirm:$false
+                }
+            }
+
+            "Linux" {
+                throw [PlatformNotSupportedException]::new()
+            }
+
+            "OSX" {
+                throw [PlatformNotSupportedException]::new()
+            }
+
+            default {
+                throw [PlatformNotSupportedException]::new()
+            }
+        }
     }
 }
