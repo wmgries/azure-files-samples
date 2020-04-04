@@ -3845,7 +3845,12 @@ function Get-AzFilesPrivateEndpoint {
                 $connections = $_ | Select-Object -ExpandProperty PrivateLinkServiceConnections
                 $storageAccount.Id -eq ($connections | Select-Object -ExpandProperty PrivateLinkServiceId) -and `
                     "file" -eq ($connections | Select-Object -ExpandProperty GroupIds) 
-            }
+            } | `
+            Select-Object `
+                @{ Name = "ResourceGroupName"; Expression = { $_.ResourceGroupName } }, `
+                @{ Name = "PrivateEndpointName"; Expression = { $_.Name } }, `
+                @{ Name = "StorageAccountResourceGroupName"; Expression = { $ResourceGroupName } }, `
+                @{ Name = "StorageAccountName"; Expression = { $StorageAccountName } }
     }
 }
 
@@ -3885,6 +3890,8 @@ function Get-AzPrivateEndpointIpAddress {
             } | `
             Select-Object -ExpandProperty IpConfigurations | `
             Select-Object `
+                @{ Name = "ResourceGroupName"; Expression = { $ResourceGroupName } }, `
+                @{ Name = "PrivateEndpointName"; Expression = { $PrivateEndpointName } }, `
                 @{ 
                     Name = "VirtualNetworkResourceGroupName"; 
                     Expression = { 
