@@ -104,6 +104,7 @@
         "Test-AzPermission",
         "Assert-AzPermission",
         "Get-AzFilesPrivateEndpoint",
+        "Get-AzPrivateEndpointIpAddress",
 
         # DNS cmdlets
         "Confirm-AzDnsForwarderPreReqs",

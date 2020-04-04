@@ -3848,6 +3848,84 @@ function Get-AzFilesPrivateEndpoint {
             }
     }
 }
+
+function Get-AzPrivateEndpointIpAddress {
+    [CmdletBinding()]
+    
+    param(
+        [Parameter(Mandatory=$true, ParameterSetName="PrivateEndpointName", ValueFromPipelineByPropertyName=$true)]
+        [string]$ResourceGroupName,
+
+        [Parameter(Mandatory=$true, ParameterSetName="PrivateEndpointName", ValueFromPipelineByPropertyName=$true)]
+        [Alias("Name")]
+        [string]$PrivateEndpointName
+    )
+
+    begin {
+        Assert-AzAccountConnected
+    }
+
+    process {
+        try {
+            $privateEndpoint = Get-AzPrivateEndpoint `
+                    -ResourceGroupName $ResourceGroupName `
+                    -Name $PrivateEndpointName `
+                    -ErrorAction Stop
+        } catch {
+            Write-Error `
+                    -Message "Unable to find private endpoint $PrivateEndpointName in $ResourceGroupName. This likely indicates an incorrect resource group or private endpoint name." `
+                    -ErrorAction Stop
+        }
+
+        $privateEndpoint | `
+            Select-Object -ExpandProperty NetworkInterfaces | `
+            Select-Object -ExpandProperty Id | `
+            ForEach-Object {
+                Get-AzNetworkInterface -ResourceId $_
+            } | `
+            Select-Object -ExpandProperty IpConfigurations | `
+            Select-Object `
+                @{ 
+                    Name = "VirtualNetworkResourceGroupName"; 
+                    Expression = { 
+                        $_ | `
+                            Select-Object -ExpandProperty Subnet | `
+                            Select-Object -ExpandProperty Id | `
+                            Expand-AzResourceId | `
+                            Select-Object @{ Name = "ResourceGroup"; Expression = { $_.resourceGroups } } | `
+                            Select-Object -ExpandProperty ResourceGroup 
+                    } 
+                }, `
+                @{ 
+                    Name = "VirtualNetworkName"; 
+                    Expression = {
+                        $_ | `
+                            Select-Object -ExpandProperty Subnet | `
+                            Select-Object -ExpandProperty Id | `
+                            Expand-AzResourceId | `
+                            Select-Object @{ Name = "VirtualNetworkName"; Expression = { $_.virtualNetworks } } | `
+                            Select-Object -ExpandProperty VirtualNetworkName
+                    } 
+                }, `
+                @{
+                    Name = "VirtualNetworkSubnetName";
+                    Expression = {
+                        $_ | `
+                            Select-Object -ExpandProperty Subnet | `
+                            Select-Object -ExpandProperty Id | `
+                            Expand-AzResourceId | `
+                            Select-Object @{ Name = "VirtualNetworkSubnetName"; Expression = { $_.subnets } } | `
+                            Select-Object -ExpandProperty VirtualNetworkSubnetName
+                    }
+                }, `
+                @{
+                    Name = "IpAddress";
+                    Expression = {
+                        $_ | Select-Object -ExpandProperty PrivateIpAddress
+                    }
+                }
+    }
+}
 #endregion
 
 #region DNS cmdlets
