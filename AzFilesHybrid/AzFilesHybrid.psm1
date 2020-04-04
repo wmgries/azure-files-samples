@@ -3802,6 +3802,52 @@ function Assert-AzPermission {
         }
     }
 }
+
+function Assert-AzAccountConnected {
+    $accountContext = Get-AzContext
+    if ($null -eq $accountContext) {
+        Write-Error `
+                -Message "You must connect to your Azure account before running this script/cmdlet/module." `
+                -ErrorAction Stop
+    }
+}
+
+function Get-AzFilesPrivateEndpoint {
+    [CmdletBinding()]
+
+    param(
+        [Parameter(Mandatory=$true, ParameterSetName="StorageAccountName", ValueFromPipelineByPropertyName=$true)]
+        [string]$ResourceGroupName,
+
+        [Parameter(Mandatory=$true, ParameterSetName="StorageAccountName", ValueFromPipelineByPropertyName=$true)]
+        [Alias("Name")]
+        [string]$StorageAccountName
+    )
+
+    begin {
+        Assert-AzAccountConnected
+    }
+
+    process {
+        try {
+            $storageAccount = Get-AzStorageAccount `
+                    -ResourceGroupName $ResourceGroupName `
+                    -StorageAccountName $StorageAccountName `
+                    -ErrorAction Stop
+        } catch {
+            Write-Error `
+                    -Message "Unable to find storage account $StorageAccountName in $ResourceGroupName. This likely indicates an incorrect resource group or storage account name." `
+                    -ErrorAction Stop
+        }
+
+        Get-AzPrivateEndpoint | `
+            Where-Object { 
+                $connections = $_ | Select-Object -ExpandProperty PrivateLinkServiceConnections
+                $storageAccount.Id -eq ($connections | Select-Object -ExpandProperty PrivateLinkServiceId) -and `
+                    "file" -eq ($connections | Select-Object -ExpandProperty GroupIds) 
+            }
+    }
+}
 #endregion
 
 #region DNS cmdlets
@@ -4867,6 +4913,11 @@ function New-AzDnsForwarder {
         Clear-DnsClientCacheInternal
     }
 }
+#endregion
+
+#region Troubleshooting
+
+
 #endregion
 
 #region DFS-N cmdlets

@@ -103,6 +103,7 @@
         "Get-AzCurrentAzureADUser",
         "Test-AzPermission",
         "Assert-AzPermission",
+        "Get-AzFilesPrivateEndpoint",
 
         # DNS cmdlets
         "Confirm-AzDnsForwarderPreReqs",
