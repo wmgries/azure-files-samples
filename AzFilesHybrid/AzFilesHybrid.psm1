@@ -1764,6 +1764,34 @@ function New-RegistryItemProperty {
     }
 }
 
+class DnsRecord {
+    [string]$Name
+    [string]$Type
+    [int]$TTY
+}
+
+class DnsCnameRecord : DnsRecord {
+    [string]$NameHost
+
+    DnsCnameRecord([string]$name, [string]$nameHost, [int]$tty) {
+        $this.Name = $name
+        $this.NameHost = $nameHost
+        $this.Type = "CNAME"
+        $this.TTY = $tty
+    }
+}
+
+class DnsARecord : DnsRecord {
+    [ipaddress]$IpAddress
+
+    DnsARecord([string]$name, [ipaddress]$ipAddress, [int]$tty) {
+        $this.Name = $name
+        $this.IpAddress = $ipAddress
+        $this.Type = "A"
+        $this.TTY = $tty
+    }
+}
+
 function Resolve-DnsNameInternal {
     [CmdletBinding()]
     
@@ -1773,13 +1801,44 @@ function Resolve-DnsNameInternal {
             Position=0, 
             ValueFromPipeline=$true, 
             ValueFromPipelineByPropertyName=$true)]
-        [string]$Name
+        [string]$Name,
+
+        [Parameter(Mandatory=$false)]
+        [string[]]$Server,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$NoHostsFile
     )
 
     process {
         switch((Get-OSPlatform)) {
             "Windows" {
-                return (Resolve-DnsName -Name $Name)
+                $params = @{ "Name" = $Name }
+
+                if ($PSBoundParameters.ContainsKey("Server")) {
+                    $params += @{ "Server" = $Server }
+                }
+
+                if ($NoHostsFile) {
+                    $params += @{ "NoHostsFile" = $true }
+                }
+
+                $dnsEntries = Resolve-DnsName @params
+                foreach($entry in $dnsEntries) {
+                    switch($entry.GetType()) {
+                        [Microsoft.DnsClient.Commands.DnsRecord_PTR] {
+                            [DnsCnameRecord]::new($entry.Name, $entry.NameHost, $entry.TTY)
+                        }
+
+                        [Microsoft.DnsClient.Commands.DnsRecord_A] {
+                            [DnsARecord]::new($entry.Name, [ipaddress]$entry.IP4Address, $entry.TTY)
+                        }
+                        
+                        default {
+                            Write-Verbose -Message "Resolve-DnsNameInternal did nothing with record $($entry.Type)."
+                        }
+                    }
+                }
             }
 
             "Linux" {
@@ -1793,6 +1852,90 @@ function Resolve-DnsNameInternal {
             default {
                 throw [System.PlatformNotSupportedException]::new()
             }
+        }
+    }
+}
+
+function Test-NetConnectionInternal {
+    [CmdletBinding()]
+
+    param(
+        [Parameter(Mandatory=$true, ParameterSetName="WellKnownProtocolPort", ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [Parameter(Mandatory=$true, ParameterSetName="Port", ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [Alias("ComputerName", "Name")]
+        [string]$HostName,
+
+        [Parameter(Mandatory=$true, ParameterSetName="WellKnownProtocolPort")]
+        [ValidateSet("SMB", "HTTP", "HTTPS")]
+        [string]$CommonPort,
+
+        [Parameter(Mandatory=$true, ParameterSetName="Port")]
+        [int]$Port
+    )
+
+    process {
+        if ($PSCmdlet.ParameterSetName -eq "WellKnownProtocolPort") {
+            $Port = 0
+            switch($CommonPort) {
+                "SMB" { $Port = 445 }
+                "HTTP" { $Port = 80 }
+                "HTTPS" { $Port = 443 }
+
+                default {
+                    Write-Error -Message "Unrecognized value $_ for -CommonPort." -ErrorAction Stop
+                } 
+            }
+        }
+
+        switch((Get-OSPlatform)) {
+            "Windows" {
+                Test-NetConnection `
+                        -ComputerName "csostoracct.file.core.windows.net" `
+                        -CommonTCPPort SMB `
+                        -WarningAction SilentlyContinue `
+                        -ErrorAction Stop | `
+                    Select-Object `
+                        @{ Name = "HostName"; Expression = { $_.ComputerName } }, `
+                        RemoteAddress, `
+                        RemotePort, `
+                        InterfaceAlias, `
+                        SourceAddress, `
+                        TcpTestSucceeded
+            }
+
+            "Linux" {
+                throw [System.PlatformNotSupportedException]::new()
+            }
+
+            "OSX" {
+                throw [System.PlatformNotSupportedException]::new()
+            }
+
+            default {
+                throw [System.PlatformNotSupportedException]::new()
+            }
+        }
+    }
+}
+
+function Get-DnsClientServers {
+    switch(Get-OSPlatform) {
+        "Windows" {
+            Get-DnsClientServerAddress | 
+                Where-Object { $_.AddressFamily -eq 2 } | 
+                Select-Object -ExpandProperty ServerAddresses
+        }
+
+        "Linux" {
+            throw [PlatformNotImplementedException]::new()
+        }
+
+        "OSX" {
+            throw [PlatformNotImplementedException]::new()
+        }
+
+        default {
+            throw [PlatformNotImplementedException]::new()
         }
     }
 }
@@ -2040,6 +2183,109 @@ function Initialize-RemoteSession {
             }
 
     return $Session
+}
+
+function ConvertTo-UIntIpAddress {
+    [CmdletBinding()]
+
+    param(
+        [Parameter(Mandatory=$true, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [ipaddress]$IpAddress
+    )
+
+    process {
+        $baseIpAddress = $IpAddress.IPAddressToString.Split(".") | ForEach-Object { [uint]::Parse($_) }
+        return $baseIpAddress[0] -shl 24 -bor $baseIpAddress[1] -shl 16 -bor $baseIpAddress[2] -shl 8 -bor $baseIpAddress[3]
+    }
+}
+
+function ConvertFrom-UIntIpAddress {
+    [CmdletBinding()]
+
+    param(
+        [Parameter(Mandatory=$true, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [uint]$IpAddress
+    )
+
+    process {
+        return [ipaddress]([string]::Format(
+            "{0}.{1}.{2}.{3}", 
+            $IpAddress -shr 24, 
+            $IpAddress -shr 16 -band 255, 
+            $IpAddress -shr 8 -band 255, 
+            $IpAddress -band 255))
+    }
+}
+
+function ConvertFrom-IpAddressCidr {
+    [CmdletBinding()]
+
+    param(
+        [Parameter(Mandatory=$true, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [ValidatePattern("^([0-9]{1,3}\.){3}[0-9]{1,3}(\/([1-9]|[1-2][0-9]|3[0-2]))?$")]
+        [string]$IpAddressRange
+    )
+
+    process {
+        $split = $IpAddressRange.Split("/")
+        $baseIpAddress = ConvertTo-UIntIpAddress -IpAddress ([ipaddress]$split[0])
+        $rangeNumber = $split[1]
+        
+        $maskbits = [uint]::Parse($rangeNumber)
+        $mask = [uint]::MaxValue
+        $mask = $mask -shl (32 - $maskbits)
+
+        $startRange = ConvertFrom-UIntIpAddress -IpAddress ($baseIpAddress -band $mask)
+        $endRange = ConvertFrom-UIntIpAddress -IpAddress ($baseIpAddress -bor ($mask -bxor [uint]::MaxValue))
+
+        return New-Object PSObject -Property @{ 
+                "IpAddressRange" = $IpAddressRange; 
+                "StartRange" = $startRange; 
+                "EndRange" = $endRange 
+            } | `
+            Select-Object IpAddressRange, StartRange, EndRange
+    }
+}
+
+function Test-IpAddressIsInRange {
+    [CmdletBinding()]
+
+    param(
+        [Parameter(Mandatory=$true, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [ValidatePattern("^([0-9]{1,3}\.){3}[0-9]{1,3}(\/([1-9]|[1-2][0-9]|3[0-2]))?$")]
+        [string[]]$IpAddressRange,
+
+        [Parameter(Mandatory=$true, ValueFromPipelineByPropertyName=$true)]
+        [ipaddress]$IpAddress
+    )
+
+    process {
+        $baseIpAddress = $IpAddress.IPAddressToString.Split(".") | ForEach-Object { [uint]::Parse($_) }
+
+        foreach($ipRange in $IpAddressRange) {            
+            $range = $ipRange | ConvertFrom-IpAddressCidr
+
+            $startIpAddress = $range.StartRange.IPAddressToString.Split(".") | ForEach-Object { [uint]::Parse($_) }
+            $endIpAddress = $range.EndRange.IPAddressToString.Split(".") | ForEach-Object { [uint]::Parse($_) }
+    
+            $found = $false
+            for($i=0; $i -lt 4; $i++) {
+                if ($startIpAddress[$i] -gt $baseIpAddress[$i] -or $baseIpAddress[$i] -gt $endIpAddress[$i]) {
+                    $found = $true
+                    break
+                }
+            }
+    
+            $found = !$found
+
+            New-Object PSObject -Property @{
+                    "IpAddress" = $IpAddress;
+                    "IpAddressRange" = $ipRange;
+                    "Found" = $found
+                } | `
+                Select-Object IpAddress, IpAddressRange, Found
+        }        
+    }
 }
 #endregion
 
@@ -3821,7 +4067,13 @@ function Get-AzFilesPrivateEndpoint {
 
         [Parameter(Mandatory=$true, ParameterSetName="StorageAccountName", ValueFromPipelineByPropertyName=$true)]
         [Alias("Name")]
-        [string]$StorageAccountName
+        [string]$StorageAccountName,
+
+        [Parameter(Mandatory=$true, ParameterSetName="StorageAccountObject", ValueFromPipeline=$true)]
+        [Microsoft.Azure.Commands.Management.Storage.Models.PSStorageAccount]$StorageAccount,
+
+        [Parameter(Mandatory=$true, ParameterSetName="StorageShareObject", ValueFromPipeline=$true)]
+        [Microsoft.Azure.Commands.Management.Storage.Models.PSShare]$StorageAccountFileShare
     )
 
     begin {
@@ -3829,28 +4081,46 @@ function Get-AzFilesPrivateEndpoint {
     }
 
     process {
-        try {
-            $storageAccount = Get-AzStorageAccount `
-                    -ResourceGroupName $ResourceGroupName `
-                    -StorageAccountName $StorageAccountName `
-                    -ErrorAction Stop
-        } catch {
-            Write-Error `
-                    -Message "Unable to find storage account $StorageAccountName in $ResourceGroupName. This likely indicates an incorrect resource group or storage account name." `
-                    -ErrorAction Stop
-        }
+        switch($PSCmdlet.ParameterSetName) {
+            "StorageAccountName" {
+                try {
+                    $StorageAccount = Get-AzStorageAccount `
+                            -ResourceGroupName $ResourceGroupName `
+                            -StorageAccountName $StorageAccountName `
+                            -ErrorAction Stop
+                } catch {
+                    Write-Error `
+                            -Message "Unable to find storage account $StorageAccountName in $ResourceGroupName. This likely indicates an incorrect resource group or storage account name." `
+                            -ErrorAction Stop
+                }
+            }
+
+            "StorageAccountObject" {
+                # Do nothing
+            }
+
+            "StorageShareObject" {
+                $StorageAccount = $StorageAccountFileShare | `
+                    Expand-AzResourceId | `
+                    ForEach-Object { 
+                        Get-AzStorageAccount `
+                                -ResourceGroupName $_.resourceGroups `
+                                -StorageAccountName $_.storageAccounts 
+                    }
+            }
+        }        
 
         Get-AzPrivateEndpoint | `
             Where-Object { 
                 $connections = $_ | Select-Object -ExpandProperty PrivateLinkServiceConnections
-                $storageAccount.Id -eq ($connections | Select-Object -ExpandProperty PrivateLinkServiceId) -and `
+                $StorageAccount.Id -eq ($connections | Select-Object -ExpandProperty PrivateLinkServiceId) -and `
                     "file" -eq ($connections | Select-Object -ExpandProperty GroupIds) 
             } | `
             Select-Object `
                 @{ Name = "ResourceGroupName"; Expression = { $_.ResourceGroupName } }, `
                 @{ Name = "PrivateEndpointName"; Expression = { $_.Name } }, `
-                @{ Name = "StorageAccountResourceGroupName"; Expression = { $ResourceGroupName } }, `
-                @{ Name = "StorageAccountName"; Expression = { $StorageAccountName } }
+                @{ Name = "StorageAccountResourceGroupName"; Expression = { $StorageAccount.ResourceGroupName } }, `
+                @{ Name = "StorageAccountName"; Expression = { $StorageAccount.StorageAccountName } }
     }
 }
 
@@ -3863,7 +4133,10 @@ function Get-AzPrivateEndpointIpAddress {
 
         [Parameter(Mandatory=$true, ParameterSetName="PrivateEndpointName", ValueFromPipelineByPropertyName=$true)]
         [Alias("Name")]
-        [string]$PrivateEndpointName
+        [string]$PrivateEndpointName,
+
+        [Parameter(Mandatory=$true, ParameterSetName="PrivateEndpointObject", ValueFromPipeline=$true)]
+        [Microsoft.Azure.Commands.Network.Models.PSPrivateEndpoint]$PrivateEndpoint
     )
 
     begin {
@@ -3871,18 +4144,20 @@ function Get-AzPrivateEndpointIpAddress {
     }
 
     process {
-        try {
-            $privateEndpoint = Get-AzPrivateEndpoint `
-                    -ResourceGroupName $ResourceGroupName `
-                    -Name $PrivateEndpointName `
-                    -ErrorAction Stop
-        } catch {
-            Write-Error `
-                    -Message "Unable to find private endpoint $PrivateEndpointName in $ResourceGroupName. This likely indicates an incorrect resource group or private endpoint name." `
-                    -ErrorAction Stop
-        }
+        if ($PSCmdlet.ParameterSetName -eq "PrivateEndpointName") {
+            try {
+                $PrivateEndpoint = Get-AzPrivateEndpoint `
+                        -ResourceGroupName $ResourceGroupName `
+                        -Name $PrivateEndpointName `
+                        -ErrorAction Stop
+            } catch {
+                Write-Error `
+                        -Message "Unable to find private endpoint $PrivateEndpointName in $ResourceGroupName. This likely indicates an incorrect resource group or private endpoint name." `
+                        -ErrorAction Stop
+            }
+        }        
 
-        $privateEndpoint | `
+        $PrivateEndpoint | `
             Select-Object -ExpandProperty NetworkInterfaces | `
             Select-Object -ExpandProperty Id | `
             ForEach-Object {
@@ -3931,6 +4206,163 @@ function Get-AzPrivateEndpointIpAddress {
                         $_ | Select-Object -ExpandProperty PrivateIpAddress
                     }
                 }
+    }
+}
+
+function Get-AzFilesHostName {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true, ParameterSetName="StorageAccountName", ValueFromPipelineByPropertyName=$true)]
+        [string]$ResourceGroupName,
+
+        [Parameter(Mandatory=$true, ParameterSetName="StorageAccountName", ValueFromPipelineByPropertyName=$true)]
+        [Alias("Name")]
+        [string]$StorageAccountName,
+
+        [Parameter(Mandatory=$true, ParameterSetName="StorageAccountObject", ValueFromPipeline=$true)]
+        [Microsoft.Azure.Commands.Management.Storage.Models.PSStorageAccount]$StorageAccount,
+
+        [Parameter(Mandatory=$true, ParameterSetName="StorageShareObject", ValueFromPipeline=$true)]
+        [Microsoft.Azure.Commands.Management.Storage.Models.PSShare]$StorageAccountFileShare
+    )
+
+    begin {
+        Assert-AzAccountConnected
+    }
+
+    process {
+        switch($PSCmdlet.ParameterSetName) {
+            "StorageAccountName" {
+                try {
+                    $StorageAccount = Get-AzStorageAccount `
+                            -ResourceGroupName $ResourceGroupName `
+                            -Name $StorageAccountName `
+                            -ErrorAction Stop
+                } catch {
+                    Write-Error `
+                        -Message "Unable to find storage account $StorageAccountName in $ResourceGroupName. This likely indicates an incorrect resource group or storage account name." `
+                        -ErrorAction Stop
+                }
+            }
+
+            "StorageAccountObject" {
+                # Do nothing
+            }
+
+            "StorageShareObject" {
+                $StorageAccount = $StorageAccountFileShare | `
+                    Expand-AzResourceId | `
+                    ForEach-Object { 
+                        Get-AzStorageAccount `
+                                -ResourceGroupName $_.resourceGroups `
+                                -StorageAccountName $_.storageAccounts 
+                    }
+            }
+        }
+
+        return ([System.Uri]::new($StorageAccount.PrimaryEndpoints.File)).Host
+    }
+}
+
+function Get-AzServicePublicIpAddress {
+    [CmdletBinding()]
+
+    param(
+        [Parameter(Mandatory=$true, ValueFromPipelineByPropertyName=$true)]
+        [ValidateSet("Microsoft.Storage", "Microsoft.StorageSync")]
+        [string]$Service,
+
+        [Parameter(Mandatory=$false, ValueFromPipelineByPropertyName=$true)]
+        [string]$Location = "*",
+
+        [Parameter(Mandatory=$false)]
+        [ValidateRange("Positive")]
+        [int]$CheckDownloadDaysAgo = 7
+    )
+
+    begin {
+        Assert-AzAccountConnected
+
+        # Get the Azure cloud. This should automatically based on the context of 
+        # your Az PowerShell login, however if you manually need to populate, you can find
+        # the correct values using Get-AzEnvironment.
+        $azureCloud = Get-AzContext | `
+            Select-Object -ExpandProperty Environment | `
+            Select-Object -ExpandProperty Name
+
+        # Download date is the string matching the JSON document on the Download Center. 
+        $possibleDownloadDates = 0..$CheckDownloadDaysAgo | `
+            ForEach-Object { [System.DateTime]::Now.AddDays($_ * -1).ToString("yyyyMMdd") }
+        
+        $downloadTemplate = ""
+        if ($ServiceTagDownloadUriTemplate.ContainsKey($azureCloud)) {
+            $downloadTemplate = $ServiceTagDownloadUriTemplate[$azureCloud]
+        } else {
+            Write-Error `
+                    -Message "The Azure environment $azureCloud is not currently supported by this cmdlet." `
+                    -ErrorAction Stop
+        }
+
+        $downloadUris = $possibleDownloadDates | ForEach-Object {
+            [string]::Format($downloadTemplate, $_)
+        }
+
+        # Find most recent file
+        $found = $false 
+        foreach($downloadUri in $downloadUris) {
+            try { $response = Invoke-WebRequest -Uri $downloadUri -UseBasicParsing } catch { }
+            if ($response.StatusCode -eq 200) {
+                $found = $true
+                break
+            }
+        }
+
+        if (!$found) {
+            Write-Error `
+                    -Message "Service tag file could not be downloaded." `
+                    -ErrorAction Stop
+        } 
+
+        # Get the raw JSON 
+        $content = [System.Text.Encoding]::UTF8.GetString($response.Content)
+
+        # Parse the JSON
+        $serviceTags = ConvertFrom-Json -InputObject $content -Depth 100
+    }
+
+    process {
+        # Validate the service/service tag mapping
+        $serviceTag = ""
+        if ($ServiceTagMapping.ContainsKey($Service)) {
+            $serviceTag = $ServiceTagMapping[$Service]
+        } else {
+            Write-Error -Message "The service $Service is not currently supported by this cmdlet." -ErrorAction Stop
+        }
+
+        # Verify the provided region
+        if (![string]::IsNullOrEmpty($Location) -and $Location -ne "*") {
+            $validLocations = Get-AzLocation | `
+                Where-Object { $_.Providers -contains $Service } | `
+                Select-Object -ExpandProperty Location
+            
+            if ($validLocations -notcontains $Location) {
+                Write-Error `
+                        -Message "The specified location $Location is not available. Either $Service is not deployed there or the location does not exist." `
+                        -ErrorAction Stop
+            }
+        } else {
+            $Location = "*"
+        }
+    
+        # Get the specific $ipAddressRanges
+        return $serviceTags | `
+            Select-Object -ExpandProperty values | `
+            Where-Object { $_.id -like "$serviceTag.$Location" } | `
+            Select-Object -ExpandProperty properties | `
+            Select-Object `
+                @{ Name = "Service"; Expression = { $Service } }, `
+                @{ Name = "Location"; Expression = { $_.region } }, `
+                @{ Name = "IpAddressRange"; Expression = { $_.addressPrefixes } }
     }
 }
 #endregion
@@ -5001,7 +5433,133 @@ function New-AzDnsForwarder {
 #endregion
 
 #region Troubleshooting
+enum AzFilesEndpointNameResolution {
+    PublicEndpoint
+    PrivateEndpoint
+    ExplicitFqdn
+    Unknown
+}
 
+class DnsResolutionTest {
+    [string]$HostName
+    [string]$AuthoritativeName
+    [string]$IpAddress
+    [AzFilesEndpointNameResolution]$EndpointType
+
+    DnsResolutionTest(
+        [string]$hostName, 
+        [string]$authoritativeName, 
+        [string]$ipAddress, 
+        [AzFilesEndpointNameResolution]$endpointType
+    ) {
+        $this.HostName = $hostName
+        $this.AuthoritativeName = $authoritativeName
+        $this.IpAddress = $ipAddress
+        $this.EndpointType = $endpointType
+    }
+}
+
+function Test-AzFilesNetConnection {
+    [CmdletBinding()]
+
+    param(
+        [Parameter(Mandatory=$true, ParameterSetName="StorageAccountName", ValueFromPipelineByPropertyName=$true)]
+        [string]$ResourceGroupName,
+
+        [Parameter(Mandatory=$true, ParameterSetName="StorageAccountName", ValueFromPipelineByPropertyName=$true)]
+        [string]$StorageAccountName,
+
+        [Parameter(Mandatory=$true, ParameterSetName="StorageAccountObject", ValueFromPipeline=$true)]
+        [Microsoft.Azure.Commands.Management.Storage.Models.PSStorageAccount]$StorageAccount,
+
+        [Parameter(Mandatory=$true, ParameterSetName="StorageShareObject", ValueFromPipeline=$true)]
+        [Microsoft.Azure.Commands.Management.Storage.Models.PSShare]$StorageAccountFileShare,
+
+        [Parameter(Mandatory=$false, ParameterSetName="StorageAccountName")]
+        [Parameter(Mandatory=$false, ParameterSetName="StorageAccountObject")]
+        [Parameter(Mandatory=$false, ParameterSetName="StorageShareObject")]
+        [ValidateSet("SMB", "HTTP", "HTTPS")]
+        [string[]]$ProtocolsToTest = @("SMB")
+    )
+
+    begin {
+        Assert-AzAccountConnected
+    }
+
+    process {
+        switch($PSCmdlet.ParameterSetName) {
+            "StorageAccountName" {
+                try {
+                    $StorageAccount = Get-AzStorageAccount `
+                            -ResourceGroupName $ResourceGroupName `
+                            -Name $StorageAccountName `
+                            -ErrorAction Stop
+                } catch {
+                    Write-Error `
+                        -Message "Unable to find storage account $StorageAccountName in $ResourceGroupName. This likely indicates an incorrect resource group or storage account name." `
+                        -ErrorAction Stop
+                }
+            }
+
+            "StorageAccountObject" {
+                # Do nothing
+            }
+
+            "StorageShareObject" {
+                $StorageAccount = $StorageAccountFileShare | `
+                    Expand-AzResourceId | `
+                    ForEach-Object { 
+                        Get-AzStorageAccount `
+                                -ResourceGroupName $_.resourceGroups `
+                                -StorageAccountName $_.storageAccounts 
+                    }
+            }
+        }
+
+        # Get endpoint suffixes
+        $storageAccountEndpoint = Get-AzContext | `
+            Select-Object -ExpandProperty Environment | `
+            Select-Object -ExpandProperty StorageEndpointSuffix
+        
+        $filesEndpoint = "file.$storageAccountEndpoint"
+        $filesPrivateEndpoint = "privatelink.$filesEndpoint"
+        $publicEndpointClusterSuffix = "store.$storageAccountEndpoint"
+
+        # Get host name
+        $HostName = $StorageAccount | Get-AzFilesHostName
+
+        if ($HostName -notcontains $filesEndpoint) {
+            Write-Error -Message "Unexpected host name/endpoint suffix mismatch. Host name: $HostName. Files endpoint suffix: $filesEndpoint"
+        }
+
+        # Test DNS
+        $dnsResolution = Resolve-DnsNameInternal -Name $HostName | `
+            Where-Object { $_.GetType() -eq [DnsARecord] }        
+
+        $privateEndpoints = $StorageAccount | Get-AzPrivateEndpointIpAddress
+        $privateEndpointIpAddresses = $privateEndpoints | Get-AzPrivateEndpointIpAddress
+        $privateIpAddresses = $privateEndpointIpAddresses | Select-Object -ExpandProperty IpAddress
+
+        foreach($dnsRecord in $dnsResolution) {
+            $endpointType = [AzFilesEndpointNameResolution]::Unknown
+
+            if ($dnsRecord.Name -eq $filesPrivateEndpoint -and $dnsRecord.IpAddress -in $privateIpAddresses) {
+                $endpointType = [AzFilesEndpointNameResolution]::PrivateEndpoint
+                # [string]$hostName, 
+                # [string]$authoritativeName, 
+                # [string]$ipAddress, 
+                # [AzFilesEndpointNameResolution]$endpointType
+
+                [DnsResolutionTest]::new($HostName, $dnsRecord.Name, $dnsRecord.IpAddress, $endpointType)
+            } #elseif ($dnsRecord)
+        }
+
+        # Test network connection
+        $ProtocolsToTest | ForEach-Object { 
+            Test-NetConnectionInternal -HostName $HostName -CommonPort $_
+        }
+    }
+}
 
 #endregion
 
@@ -5015,6 +5573,8 @@ $DnsForwarderTemplate = [string]$null
 $SkipPowerShellGetCheck = $false
 $SkipAzPowerShellCheck = $false
 $SkipDotNetFrameworkCheck = $false
+$ServiceTagDownloadUriTemplate = @{}
+$ServiceTagMapping = @{}
 
 function Invoke-ModuleConfigPopulate {
     <#
@@ -5089,6 +5649,18 @@ function Invoke-ModuleConfigPopulate {
         $script:SkipDotNetFrameworkCheck = $OverrideModuleConfig["SkipDotNetFrameworkCheck"]
     } else {
         $script:SkipDotNetFrameworkCheck = $DefaultModuleConfig["SkipDotNetFrameworkCheck"]
+    }
+
+    if ($OverrideModuleConfig.ContainsKey("ServiceTagDownloadUriTemplate")) {
+        $script:ServiceTagDownloadUriTemplate = $OverrideModuleConfig["ServiceTagDownloadUriTemplate"]
+    } else {
+        $script:ServiceTagDownloadUriTemplate = $DefaultModuleConfig["ServiceTagDownloadUriTemplate"]
+    }
+
+    if ($OverrideModuleConfig.ContainsKey("ServiceTagMapping")) {
+        $script:ServiceTagMapping = $OverrideModuleConfig["ServiceTagMapping"]
+    } else {
+        $script:ServiceTagMapping = $DefaultModuleConfig["ServiceTagMapping"]
     }
 }
 

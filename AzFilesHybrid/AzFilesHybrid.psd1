@@ -88,6 +88,10 @@
         "ConvertTo-EncodedJson",
         "New-RegistryItem",
         "New-RegistryItemProperty",
+        "ConvertFrom-IpAddressCidr",
+        "ConvertFrom-UIntIpAddress",
+        "ConvertTo-UIntIpAddress",
+        "Test-IpAddressIsInRange",
 
         # Azure Files AD domain join cmdlets
         "Get-AzStorageAccountADObject",
@@ -105,6 +109,7 @@
         "Assert-AzPermission",
         "Get-AzFilesPrivateEndpoint",
         "Get-AzPrivateEndpointIpAddress",
+        "Get-AzServicePublicIpAddress",
 
         # DNS cmdlets
         "Confirm-AzDnsForwarderPreReqs",
@@ -115,7 +120,10 @@
         "New-AzDnsForwarder",
         "New-AzDnsForwardingRuleSet",
         "Add-AzDnsForwardingRule",
-        "Push-DnsServerConfiguration"
+        "Push-DnsServerConfiguration",
+
+        # Troubleshooting cmdlets
+        "Test-AzFilesNetConnection"
     
     # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.
     CmdletsToExport = @()
@@ -144,7 +152,17 @@
             DnsForwarderTemplate = "https://raw.githubusercontent.com/Azure-Samples/azure-files-samples/master/dns-forwarder/azuredeploy.json";
             SkipPowerShellGetCheck = $false;
             SkipAzPowerShellCheck = $false;
-            SkipDotNetFrameworkCheck = $false
+            SkipDotNetFrameworkCheck = $false;
+            ServiceTagDownloadUriTemplate = @{
+                "AzureCloud" = "https://download.microsoft.com/download/7/1/D/71D86715-5596-4529-9B13-DA13A5DE5B63/ServiceTags_Public_{0}.json";
+                "AzureUSGovernment" = "https://download.microsoft.com/download/6/4/D/64DB03BF-895B-4173-A8B1-BA4AD5D4DF22/ServiceTags_AzureGovernment_{0}.json";
+                "AzureChinaCloud" = "https://download.microsoft.com/download/9/D/0/9D03B7E2-4B80-4BF3-9B91-DA8C7D3EE9F9/ServiceTags_China_{0}.json";
+                "AzureGermanCloud" = "https://download.microsoft.com/download/0/7/6/076274AB-4B0B-4246-A422-4BAF1E03F974/ServiceTags_AzureGermany_{0}.json";
+            };
+            ServiceTagMapping = @{
+                "Microsoft.Storage" = "Storage";
+                "Microsoft.StorageSync" = "StorageSyncService"
+            } 
         };
     
         PSData = @{
