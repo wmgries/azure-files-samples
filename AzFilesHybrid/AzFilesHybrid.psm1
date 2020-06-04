@@ -4525,6 +4525,7 @@ function Add-AzDnsForwardingRule {
         [Parameter(Mandatory=$true, ParameterSetName="AzureEndpointParameterSet")]
         [ValidateSet(
             "StorageAccountEndpoint", 
+            "StorageSyncEndpoint",
             "SqlDatabaseEndpoint", 
             "KeyVaultEndpoint")]
         [string]$AzureEndpoint,
@@ -4555,13 +4556,37 @@ function Add-AzDnsForwardingRule {
             if ($null -eq $subscriptionContext) {
                 throw [AzureLoginRequiredException]::new()
             }
-            $environmentEndpoints = Get-AzEnvironment -Name $subscriptionContext.Environment
+            $environmentEndpoints = $subscriptionContext | `
+                Select-Object -ExpandProperty Environment
 
             switch($AzureEndpoint) {
                 "StorageAccountEndpoint" {
                     $DomainName = $environmentEndpoints.StorageEndpointSuffix
                     $AzureResource = $true
 
+                    $MasterServers = [System.Collections.Generic.HashSet[string]]::new()
+                    $MasterServers.Add($azurePrivateDnsIp) | Out-Null
+                }
+
+                "StorageSyncEndpoint" {
+                    $DomainName = ""
+                    switch($environmentEndpoints.Name) {
+                        "AzureCloud" {
+                            $DomainName = "afs.azure.net"
+                        }
+
+                        "AzureUSGovernment" {
+                            $DomainName = "afs.azure.us"
+                        }
+
+                        default {
+                            Write-Error `
+                                    -Message "The Azure environment $_ is not currently supported by Azure File Sync." `
+                                    -ErrorAction Stop
+                        }
+                    }
+
+                    $AzureResource = $true
                     $MasterServers = [System.Collections.Generic.HashSet[string]]::new()
                     $MasterServers.Add($azurePrivateDnsIp) | Out-Null
                 }
@@ -4628,6 +4653,7 @@ function New-AzDnsForwardingRuleSet {
         [Parameter(Mandatory=$false)]
         [ValidateSet(
             "StorageAccountEndpoint", 
+            "StorageSyncEndpoint",
             "SqlDatabaseEndpoint", 
             "KeyVaultEndpoint")]
         [System.Collections.Generic.HashSet[string]]$AzureEndpoints,
